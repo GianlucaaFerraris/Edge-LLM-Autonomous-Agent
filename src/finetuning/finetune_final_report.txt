@@ -1,0 +1,33 @@
+
+[english_tutor] english_tutor_dataset.jsonl
+  Total: 300
+  Válidos: 300/300 (100%)
+  Inválidos: 0
+  Parse errors: 0
+
+[engineering] engineering_dataset.jsonl
+  Total: 400
+  Válidos: 400/400 (100%)
+  Inválidos: 0
+  Parse errors: 0
+
+[agent] agent_dataset_clean.jsonl
+  Total: 133
+  Válidos: 133/150 (89%)
+  Inválidos: 0
+  Parse errors: 0
+
+[COMBINADO]
+  Total válidos: 833
+  Total errores: 0
+  avg_chars: 2122
+  avg_tokens_approx: 530
+  max_chars: 4203
+  max_tokens_approx: 1050
+  min_chars: 823
+  mode_agent: 133
+  mode_engineering: 400
+  mode_english_tutor: 300
+  turns_3: 216
+  turns_4: 300
+  turns_5: 317

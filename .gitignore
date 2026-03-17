@@ -1,0 +1,21 @@
+# Model files
+model/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# DB files
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+session_log.jsonl
+latency_results.json
+
+# Python
+__pycache__/
+*.pyc
+.env
