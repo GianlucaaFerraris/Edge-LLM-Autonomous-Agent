@@ -40,6 +40,6 @@ En dispositivos de borde (ver [Edge AI](../Machine%20Learning%20-%20Fundamentos%
 ## <font color="#de7802">5. Estrategias de Mitigación en el Proyecto</font>
 
 Para superar el "Muro de la Memoria" en nuestra implementación:
-1. [Cuantización](Cuantización.md) (4-bit o 3-bit): Al reducir el tamaño del modelo, disminuimos los GB que deben viajar por el bus en cada paso.
-2. [KV Caching](KV%20Caching.md):** Reutilizamos cálculos previos para no tener que volver a leer todo el historial de la conversación desde la RAM.
+1. [Cuantización](../Machine%20Learning%20-%20Fundamentos%20&%20Definiciones/Cuantización.md) (4-bit o 3-bit): Al reducir el tamaño del modelo, disminuimos los GB que deben viajar por el bus en cada paso.
+2. [KV Caching](../Machine%20Learning%20-%20Fundamentos%20&%20Definiciones/KV%20Caching.md):** Reutilizamos cálculos previos para no tener que volver a leer todo el historial de la conversación desde la RAM.
 3. **Optimización de RAM:** Cerrar servicios innecesarios en Linux para asegurar que el bus de datos esté dedicado exclusivamente al proceso de inferencia.

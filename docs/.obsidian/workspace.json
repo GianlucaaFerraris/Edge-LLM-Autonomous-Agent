@@ -4,21 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "0cf4ea705847efb0",
+        "id": "3458bbab3af21fe5",
         "type": "tabs",
         "children": [
           {
-            "id": "62733b5254003226",
+            "id": "47901aaf1fd5a0c4",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Hardware - Fundamentos & Definiciones/Latencia.md",
+                "file": "LLM - Conceptos & Modelos/Fine Tuning.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Latencia"
+              "title": "Fine Tuning"
             }
           }
         ]
@@ -94,7 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "Hardware - Fundamentos & Definiciones/Latencia.md",
+                "file": "PPS - Informes/Fase 1 - Auditoria de Hardware y Benchmarking/1.1 - Análisis de Cómputo.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for Latencia"
+              "title": "Backlinks for 1.1 - Análisis de Cómputo"
             }
           },
           {
@@ -183,45 +183,45 @@
       "bases:Create new base": false
     }
   },
-  "active": "62733b5254003226",
+  "active": "4339b098db7c654f",
   "lastOpenFiles": [
-    "Hardware - Fundamentos & Definiciones/Latencia de Inferencia.md",
-    "Hardware - Fundamentos & Definiciones/Latencia.md",
-    "Hardware - Fundamentos & Definiciones/KV Caching.md",
-    "Hardware - Fundamentos & Definiciones/Instrucciones Vectoriales.md",
+    "Untitled",
+    "Untitled.canvas",
+    "LLM - Conceptos & Modelos/Fine Tuning.md",
+    "Untitled.md",
+    "LLM - Conceptos & Modelos/Transformers.md",
     "Hardware - Fundamentos & Definiciones/Inferencia.md",
-    "Hardware - Fundamentos & Definiciones/FLOPS.md",
-    "Hardware - Fundamentos & Definiciones/Benchmark.md",
-    "Hardware - Fundamentos & Definiciones/Cuantización.md",
-    "Radxa - Conceptos & SBC/Radxa Rock 5 Model B.md",
-    "Machine Learning - Fundamentos & Definiciones/Perplexity.md",
-    "Machine Learning - Fundamentos & Definiciones/Token.md",
-    "Transformers/Transformers.md",
-    "Transformers",
+    "Machine Learning - Fundamentos & Definiciones/Prompt.md",
     "PPS - Informes/Fase 1 - Auditoria de Hardware y Benchmarking/1.1 - Análisis de Cómputo.md",
-    "PPS - Informes/Plan de Actividades.md",
-    "LLM - Conceptos & Modelos/LLM.md",
+    "Machine Learning - Fundamentos & Definiciones/Deep Learning.md",
+    "Machine Learning - Fundamentos & Definiciones/Edge AI.md",
     "Machine Learning - Fundamentos & Definiciones/Cuantización.md",
+    "LLM - Conceptos & Modelos/LLM.md",
+    "LLM - Conceptos & Modelos/QWen 2.5 7B.md",
+    "LLM - Conceptos & Modelos/Ventana de Contexto.md",
     "Hardware - Fundamentos & Definiciones/Ancho de Banda de Memoria.md",
+    "Hardware - Fundamentos & Definiciones/Latencia de Inferencia.md",
+    "Machine Learning - Fundamentos & Definiciones/KV Caching.md",
+    "Machine Learning - Fundamentos & Definiciones/LoRA.md",
+    "Machine Learning - Fundamentos & Definiciones/Perplexity.md",
+    "Hardware - Fundamentos & Definiciones/Latencia.md",
+    "Hardware - Fundamentos & Definiciones/Instrucciones Vectoriales.md",
+    "Hardware - Fundamentos & Definiciones/Benchmark.md",
+    "Hardware - Fundamentos & Definiciones/FLOPS.md",
+    "Transformers/Transformers.md",
+    "Machine Learning - Fundamentos & Definiciones/Token.md",
+    "Machine Learning - Fundamentos & Definiciones/QLoRA.md",
+    "Radxa - Conceptos & SBC/Radxa Rock 5 Model B.md",
+    "Transformers",
     "Imagenes/Pasted image 20260211110809.png",
     "Imagenes",
-    "NVIDIA - Conceptos & SBC/NVIDIA Jetson Orin Nano.md",
     "Radxa - Conceptos & SBC",
-    "Untitled.md",
-    "Machine Learning - Fundamentos & Definiciones/Red Neuronal.md",
-    "Machine Learning - Fundamentos & Definiciones/Deep Learning.md",
-    "Machine Learning - Fundamentos & Definiciones/Fine-Tuning.md",
-    "Machine Learning - Fundamentos & Definiciones/Edge AI.md",
     "PPS - Informes/Fase 1 - Auditoria de Hardware y Benchmarking",
-    "Tokens.md",
     "PPS - Informes",
     "Software - Programas Utilizados & Definiciones",
-    "LLM - Conceptos & Modelos/QWen 2.5 7B.md",
-    "Machine Learning - Fundamentos & Definiciones/Prompt.md",
     "LLM - Conceptos & Modelos",
     "NVIDIA - Conceptos & SBC",
     "Imagenes",
-    "Imagenes/Pasted image 20260210171240.png",
-    "Machine Learning - Fundamentos & Definiciones"
+    "Imagenes/Pasted image 20260210171240.png"
   ]
 }

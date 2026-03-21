@@ -14,7 +14,7 @@ Es el tiempo promedio entre la generación de cada palabra subsiguiente al prime
 * **Fórmula:** $\text{TPOT} = \frac{1}{\text{Tokens per Second}}$
 * Si el TPOT es de 150ms, la velocidad será de ~6.6 [Token](../Machine%20Learning%20-%20Fundamentos%20&%20Definiciones/Token.md)/s, lo cual es similar a la velocidad de lectura humana rápida.
 
-Relacionandolo con [KV Caching](KV%20Caching.md):
+Relacionandolo con [KV Caching](../Machine%20Learning%20-%20Fundamentos%20&%20Definiciones/KV%20Caching.md):
 
 | Fase     | Metrica de Rendimiento             | Descripción                                                        |
 | -------- | ---------------------------------- | ------------------------------------------------------------------ |
@@ -33,4 +33,4 @@ Relacionandolo con [KV Caching](KV%20Caching.md):
 Para nuestro proyecto:
 1. **Meta de TTFT:** < 1.0 segundos (para que la respuesta parezca inmediata).
 2. **Meta de TPOT:** < 200 ms (para que el habla del asistente sea fluida y no entrecortada).
-3. **Estrategia:** Usaremos [KV Caching](KV%20Caching.md) (Almacenamiento de claves y valores) para que el modelo no tenga que re-procesar toda la conversación en cada turno, reduciendo la latencia acumulada.
+3. **Estrategia:** Usaremos [KV Caching](../Machine%20Learning%20-%20Fundamentos%20&%20Definiciones/KV%20Caching.md) (Almacenamiento de claves y valores) para que el modelo no tenga que re-procesar toda la conversación en cada turno, reduciendo la latencia acumulada.

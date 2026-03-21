@@ -38,5 +38,5 @@ Implementar un modelo de la familia [QWen 2.5 7B](../LLM%20-%20Conceptos%20&%20M
 Para que un LLM sea viable en mi [NVIDIA Jetson Orin Nano](../NVIDIA%20-%20Conceptos%20&%20SBC/NVIDIA%20Jetson%20Orin%20Nano.md), el proyecto aplicará:
 
 - **Cuantización:** Reducción de la precisión de los pesos (ej. de FP16 a INT4).
-- [Fine-Tuning](Fine-Tuning.md) ([QLoRA](QLoRA.md)): Adaptación del modelo sin re-entrenar todos sus parámetros.
+- [Fine Tuning](../LLM%20-%20Conceptos%20&%20Modelos/Fine%20Tuning.md) ([QLoRA](QLoRA.md)): Adaptación del modelo sin re-entrenar todos sus parámetros.
 - **Inferencia Acelerada:** Uso de núcleos [CUDA](../NVIDIA%20-%20Conceptos%20&%20SBC/CUDA.md) (NVIDIA) para desplazar la carga de trabajo fuera de la CPU general.
