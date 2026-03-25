@@ -30,23 +30,6 @@ The result is a system that can reason, schedule, search, teach, and *see* — a
 │                                                                 │
 │   Voice / Text ──► Orchestrator ──► Intent Router               │
 │                          │                                      │
-<<<<<<< HEAD
-│              ┌───────────┼───────────┐                         │
-│              ▼           ▼           ▼                         │
-│         English      Engineering   Agent                       │
-│          Tutor         Tutor      Session                      │
-│        + LangTool    + RAG (FAISS)   │                         │
-│        + 600 topics  + 9,415 vectors │                         │
-│                                      │                         │
-│                          ┌───────────┴──────────┐              │
-│                          ▼                      ▼              │
-│                    Tool Dispatcher     Perception Module       │
-│                    (tasks/calendar/    OAK-D Pro NPU          │
-│                     reminders/web)    Stereo Depth + YOLO     │
-│                          │                      │              │
-│                          └───────────┬──────────┘              │
-│                                      ▼                         │
-=======
 │              ┌───────────┼───────────┐                          │
 │              ▼           ▼           ▼                          │
 │         English      Engineering   Agent                        │
@@ -60,7 +43,6 @@ The result is a system that can reason, schedule, search, teach, and *see* — a
 │                          │                     │                │
 │                          └──────────┬──────────┘                │
 │                                     ▼                           │
->>>>>>> 8f1e0e9 (doc: added to gitignore the obsidian documentation and generating the official documentation for easier interpretation of the project)
 │                              SQLite Storage                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
