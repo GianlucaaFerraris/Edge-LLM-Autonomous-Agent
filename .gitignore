@@ -6,6 +6,8 @@ model/
 *.pt
 *.pth
 
+*.vscode/
+
 # DB files
 *.db
 *.db-shm
@@ -24,3 +26,4 @@ __pycache__
 # Folders to ignore
 src/engineering/rag/index/
 src/engineering/rag/docs/
+obsidian_docs/

@@ -1,3 +1,0 @@
-## <font color="#de7802">1. Definición </font>
-
-Es el acto de correr un programa computacional con el objetivo de poder determinar la performance de un hardware. De esta forma se puede obtener un valor cuantitativo de la capacidad de una computadora con respecto a un campo en específico. Por ejemplo, a través de un programa como ```llama.cpp benchmark``` se puede obtener los FLOPs y con ```LINPACK``` la capacidad de computo cruda [FLOPS](FLOPS.md).

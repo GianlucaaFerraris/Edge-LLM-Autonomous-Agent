@@ -28,8 +28,9 @@ The result is a system that can reason, schedule, search, teach, and *see* — a
 ┌─────────────────────────────────────────────────────────────────┐
 │                        AGENTY  PIPELINE                         │
 │                                                                 │
-│   Voice / Text ──► Orchestrator ──► Intent Router              │
+│   Voice / Text ──► Orchestrator ──► Intent Router               │
 │                          │                                      │
+<<<<<<< HEAD
 │              ┌───────────┼───────────┐                         │
 │              ▼           ▼           ▼                         │
 │         English      Engineering   Agent                       │
@@ -45,6 +46,21 @@ The result is a system that can reason, schedule, search, teach, and *see* — a
 │                          │                      │              │
 │                          └───────────┬──────────┘              │
 │                                      ▼                         │
+=======
+│              ┌───────────┼───────────┐                          │
+│              ▼           ▼           ▼                          │
+│         English      Engineering   Agent                        │
+│          Tutor         Tutor      Session                       │
+│                                     │                           │
+│                          ┌──────────┴──────────┐                │
+│                          ▼                     ▼                │
+│                    Tool Dispatcher     Perception Module        │
+│                    (tasks/calendar/    OAK-D Pro NPU            │
+│                     reminders/web)    Stereo Depth + YOLO       │
+│                          │                     │                │
+│                          └──────────┬──────────┘                │
+│                                     ▼                           │
+>>>>>>> 8f1e0e9 (doc: added to gitignore the obsidian documentation and generating the official documentation for easier interpretation of the project)
 │                              SQLite Storage                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
