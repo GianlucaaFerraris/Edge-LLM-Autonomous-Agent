@@ -47,10 +47,16 @@ SYSTEM_ENGINEERING_WITH_CONTEXT = (
     SYSTEM_ENGINEERING +
     "\n\nWhen you receive a RELEVANT CONTEXT FROM KNOWLEDGE BASE section, "
     "use it to ground your answer. Cite the source naturally if relevant "
-    "(e.g., 'according to Bishop's Deep Learning book...'). "
+    "(e.g., 'según el libro de Bishop sobre Deep Learning...'). "
     "If the context contradicts your prior knowledge, trust the context. "
     "If the context is only partially relevant, use what's useful and fill "
-    "the rest with your expertise."
+    "the rest with your expertise.\n\n"
+    "CRITICAL LANGUAGE RULE: The knowledge base context may be in English, "
+    "but you MUST ALWAYS respond in the same language the user is writing in. "
+    "If the user writes in Spanish, your ENTIRE response must be in Spanish — "
+    "translate and adapt the English context, do not copy it verbatim. "
+    "Technical terms (e.g., 'backpropagation', 'deep learning') can stay in English "
+    "if they are commonly used that way in Spanish technical discourse."
 )
 
 
@@ -132,7 +138,9 @@ def _build_rag_prompt(user_question: str, rag_context: str,
         f"USER QUESTION: {user_question}\n\n"
         f"Answer based on the context above and your expertise. "
         f"If the context directly addresses the question, use it. "
-        f"If not, rely on your knowledge."
+        f"If not, rely on your knowledge. "
+        f"IMPORTANT: Respond in the SAME language the user question is written in. "
+        f"If the question is in Spanish, your entire answer must be in Spanish."
     )
     messages = [{"role": "system", "content": SYSTEM_ENGINEERING_WITH_CONTEXT}]
     messages.extend(history[-6:])  # slightly more history for RAG turns

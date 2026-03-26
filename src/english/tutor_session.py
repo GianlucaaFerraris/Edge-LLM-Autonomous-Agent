@@ -179,7 +179,24 @@ def check_errors(text: str) -> list[dict]:
         print(f"  [LT] No disponible: {e}")
         return []
 
-    errors = []
+    # Priority tiers: lower = higher pedagogical value.
+    # Grammar/tense errors are surfaced before spelling.
+    PRIORITY = {
+        "HE_VERB_AGR": 1, "NON3PRS_VERB": 1, "DOES_DOESN_T": 1,
+        "HAVE_PART_AGREEMENT": 1, "SVA": 1,
+        "MD_BASEFORM": 2, "TO_AFTER_MODAL_VERBS": 2,
+        "SINCE_FOR_AGO": 2, "PRESENT_PERFECT_FOR_PAST": 2,
+        "I_AM_AGREE": 2, "I_AM_VB": 2, "DOUBLE_NEGATIVE": 2,
+        "EN_A_VS_AN": 3, "R_MISSING_ARTICLE": 3, "MISSING_DETERMINER": 3,
+        "ADVICES": 3, "INFORMATIONS": 3, "EQUIPMENTS": 3,
+        "FURNITURES": 3, "KNOWLEDGES": 3,
+        "LOOSE_LOSE": 3, "AFFECT_EFFECT": 3, "BORROW_LEND": 3,
+        "MORFOLOGIK_RULE_EN_US": 4, "HUNSPELL_RULE": 4,
+    }
+
+    candidates = []
+    seen_wrong = set()
+
     for match in resp.json().get("matches", []):
         rule_id     = match.get("rule", {}).get("id", "")
         category_id = match.get("rule", {}).get("category", {}).get("id", "")
@@ -187,23 +204,53 @@ def check_errors(text: str) -> list[dict]:
             continue
         if rule_id not in RELEVANT_RULES and category_id not in RELEVANT_CATEGORIES:
             continue
+
         ctx    = match.get("context", {})
         offset = ctx.get("offset", 0)
         length = ctx.get("length", 0)
         wrong  = ctx.get("text", "")[offset: offset + length]
         reps   = match.get("replacements", [])
         correct = reps[0].get("value", "") if reps else ""
-        if not wrong or not correct or wrong.lower() == correct.lower():
+
+        if not wrong or not correct:
             continue
-        errors.append({
+        if wrong.lower() == correct.lower():
+            continue
+        # Deduplicate: same wrong token seen twice (e.g. repeated word)
+        if wrong.lower() in seen_wrong:
+            continue
+
+        # Filter morphological false positives from spelling rules.
+        # LT sometimes "corrects" a non-standard verbal derivation back to its
+        # base noun/verb (e.g. 'protagonized' → 'protagonist'). The heuristic:
+        # if one form is a prefix of the other they share the same stem and the
+        # suggestion is likely a morphological ancestor, not a typo fix.
+        if rule_id in ("MORFOLOGIK_RULE_EN_US", "HUNSPELL_RULE"):
+            w, c = wrong.lower(), correct.lower()
+            if w.startswith(c) or c.startswith(w):
+                print(f"  [LT] Skipping morphological false positive: '{wrong}' → '{correct}'")
+                continue
+
+        priority = PRIORITY.get(rule_id, 3)
+        candidates.append({
             "wrong":    wrong,
             "correct":  correct,
             "sentence": match.get("sentence", "").strip(),
             "reason":   match.get("message", "Grammar error."),
             "rule_id":  rule_id,
+            "_priority": priority,
         })
-        if len(errors) >= MAX_ERRORS:
-            break
+        seen_wrong.add(wrong.lower())
+
+    # Stable sort by priority: grammar errors bubble up above spelling errors.
+    # Document order is preserved within the same tier (Python sort is stable).
+    candidates.sort(key=lambda e: e["_priority"])
+
+    errors = []
+    for c in candidates[:MAX_ERRORS]:
+        c.pop("_priority", None)
+        errors.append(c)
+
     return errors
 
 
@@ -360,18 +407,57 @@ class TutorSession:
         self.speak(opening, total=elapsed)
 
     def _ask_topic_preference(self) -> None:
+        """
+        Pregunta al usuario qué tema quiere practicar.
+        Usa el LLM para interpretar si propone un tema o quiere uno aleatorio.
+        Ya no requiere presionar Enter para aleatorio.
+        """
         if TOPICS_PATH:
             print(f"  [topics] {len(self.topics)} temas desde: {os.path.basename(TOPICS_PATH)}")
         else:
             print("  [topics] topics.json no encontrado — usando fallback")
-        print()
-        print("  ¿Querés practicar un tema específico?")
-        print("  (o presioná Enter para uno aleatorio)")
-        custom = input("  → ").strip()
-        if custom:
-            self.topic = custom
+
+        self.speak(
+            "¿Sobre qué tema querés practicar inglés? "
+            "Podés decirme un tema específico o pedirme que elija uno al azar."
+        )
+        user_input = self.listen()
+
+        if not user_input:
+            # Silencio o Enter vacío → aleatorio
+            print(f"  [INFO] Tema aleatorio: {self.topic}")
+            return
+
+        # Clasificar con LLM: ¿propone tema o pide aleatorio?
+        prompt = (
+            f"El usuario quiere practicar inglés y le preguntamos sobre qué tema.\n"
+            f"Respondió: \"{user_input}\"\n\n"
+            f"Clasificá con JSON:\n"
+            f"- Si propone un tema específico: {{\"action\": \"propose\", \"topic\": \"tema en 1-6 palabras\"}}\n"
+            f"- Si quiere un tema aleatorio (dice 'cualquiera', 'elegí vos', 'sorprendeme', "
+            f"'al azar', 'random', 'lo que sea'): {{\"action\": \"random\"}}\n"
+            f"- Si no queda claro: {{\"action\": \"random\"}}\n\n"
+            f"Respondé SOLO con JSON válido:"
+        )
+        try:
+            res = client.chat.completions.create(
+                model=_resolve_model(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=40,
+            )
+            raw = res.choices[0].message.content.strip()
+            import re as _re
+            raw = _re.sub(r"```(?:json)?", "", raw).strip().strip("`").strip()
+            import json as _json
+            data = _json.loads(raw)
+        except Exception:
+            data = {"action": "random"}
+
+        if data.get("action") == "propose" and data.get("topic"):
+            self.topic = data["topic"]
             self.used_topics.add(self.topic)
-            print(f"  [INFO] Tema: {self.topic}")
+            print(f"  [INFO] Tema propuesto: {self.topic}")
         else:
             print(f"  [INFO] Tema aleatorio: {self.topic}")
 
@@ -441,6 +527,37 @@ class TutorSession:
         t0 = time.perf_counter()
         feedback = generate_feedback(self.topic, self.history, student_text, errors)
         elapsed  = round(time.perf_counter() - t0, 2)
+
+        self._add_history("user", student_text)
+        self._add_history("assistant", feedback)
+        self.speak(feedback, total=elapsed)
+
+    def _run_normal_turn_with_errors(self, student_text: str,
+                                      errors: list) -> None:
+        """
+        Ejecuta un turno normal con errores pre-detectados.
+        Llamado desde main.py que ya filtró por idioma antes de
+        enviar a LanguageTool. Evita que LT "corrija" español como inglés.
+
+        Args:
+            student_text: Texto del estudiante.
+            errors: Lista de errores de check_errors(), ya filtrados.
+                    Puede ser [] si el texto no era inglés.
+        """
+        self.turn_count += 1
+
+        if errors:
+            print(f"  [LT] {len(errors)} error(s): " +
+                  " | ".join(f"'{e['wrong']}' → '{e['correct']}'" for e in errors))
+            self.error_log.append({
+                "turn": self.turn_count, "topic": self.topic, "errors": errors,
+            })
+        else:
+            print("  [LT] Sin errores.")
+
+        t0 = time.perf_counter()
+        feedback = generate_feedback(self.topic, self.history, student_text, errors)
+        elapsed = round(time.perf_counter() - t0, 2)
 
         self._add_history("user", student_text)
         self._add_history("assistant", feedback)

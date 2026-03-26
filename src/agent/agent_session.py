@@ -9,7 +9,7 @@ Puede correr en dos modos:
 Maneja:
   - Clarificación antes de ejecutar
   - Tools livianas (ejecutan y retornan al modo anterior)
-  - search_web (pesada: pregunta antes de abandonar la sesión actual)
+  - search_web (inline: ejecuta, inyecta contexto, LLM sintetiza respuesta)
   - Recordatorios pendientes al inicio de cada turno
   - Hora actual inyectada en el system prompt
 """
@@ -31,6 +31,10 @@ OLLAMA_URL     = "http://localhost:11434/v1"
 MODEL          = "asistente"
 FALLBACK_MODEL = "qwen2.5:7b"
 
+# Ubicación del usuario — usada para búsquedas locales.
+# El LLM la recibe en el system prompt y debe incluirla en queries de search_web.
+USER_LOCATION = "Córdoba Capital, Argentina"
+
 client = OpenAI(base_url=OLLAMA_URL, api_key="ollama")
 
 
@@ -44,7 +48,8 @@ def _build_system_prompt() -> str:
         f"Usás voseo correctamente: 'podés', 'tenés', 'querés', 'hacé', 'decime', 'avisame'. "
         f"NUNCA usás 'vos' como muletilla al inicio de las oraciones. "
         f"Tu tono es directo, amigable y conciso.\n\n"
-        f"Fecha y hora actual: {now.strftime('%A %d/%m/%Y %H:%M')}.\n\n"
+        f"Fecha y hora actual: {now.strftime('%A %d/%m/%Y %H:%M')}.\n"
+        f"Ubicación del usuario: {USER_LOCATION}.\n\n"
         f"HERRAMIENTAS DISPONIBLES:\n"
         f"- task_add(title, priority?): agregá una tarea. priority: 'alta'/'media'/'baja'.\n"
         f"- task_list(): mostrá todas las tareas pendientes.\n"
@@ -58,20 +63,25 @@ def _build_system_prompt() -> str:
         f"- cal_list(date?, from?, to?): mostrá eventos del calendario.\n"
         f"- cal_delete(event_id): eliminá un evento.\n"
         f"- cal_free(date?, duration_minutes?): encontrá huecos libres.\n"
-        f"- search_web(query): buscá en internet (abandona la sesión actual).\n\n"
+        f"- search_web(query): buscá en internet y usá los resultados para responder.\n\n"
         f"REGLAS CRÍTICAS:\n"
         f"1. Si te falta información para ejecutar una tool, preguntá ANTES de ejecutar.\n"
         f"2. Si un contacto de WhatsApp es ambiguo, mostrá la lista y preguntá.\n"
         f"3. Si fecha u hora no quedaron claras, preguntá.\n"
         f"4. Si hay ambigüedad entre tarea y evento de calendario, preguntá.\n"
-        f"5. search_web es especial: avisá que va a interrumpir la sesión actual.\n"
-        f"6. Cuando usés una herramienta, respondés EXACTAMENTE así:\n"
+        f"5. Para search_web con búsquedas locales (restaurantes, comercios, servicios, "
+        f"   eventos), incluí siempre '{USER_LOCATION}' en la query. "
+        f"   Ejemplo: si el usuario pide 'restaurantes chinos', la query debe ser "
+        f"   'restaurantes comida china {USER_LOCATION}'.\n"
+        f"6. Cuando recibas un TOOL_RESULT de search_web, leé los resultados y respondé "
+        f"   directamente al usuario con la información encontrada. No volvás a llamar "
+        f"   a search_web para la misma consulta.\n"
+        f"7. Cuando usés una herramienta, respondés EXACTAMENTE así:\n"
         f"   TOOL_CALL: {{\"tool\": \"nombre\", \"args\": {{...}}}}\n"
-        f"7. Si no necesitás herramienta, respondés directo en prosa.\n\n"
+        f"8. Si no necesitás herramienta, respondés directo en prosa.\n\n"
         f"EJEMPLOS DE CLARIFICACIÓN CORRECTA:\n"
         f"Usuario: 'mandá un whatsapp a Juanma' → preguntá: '¿Querés mandarle a Juan Manuel? [mostrar contactos]'\n"
         f"Usuario: 'el miércoles que viene reunión a las...' (sin hora fin) → '¿A qué hora termina?'\n"
-        f"Usuario: 'buscame X' → '¿Estás seguro? Buscar en internet va a pausar la sesión actual.'\n"
     )
 
 
@@ -109,7 +119,11 @@ def _resolve_model() -> str:
         return FALLBACK_MODEL
 
 
-def _chat(messages: list[dict], temperature: float = 0.1, max_tokens: int = 300) -> str:
+def _chat(messages: list[dict], temperature: float = 0.1, max_tokens: int = 500) -> str:
+    """
+    max_tokens aumentado a 500 (antes 300) para dar al LLM espacio suficiente
+    para sintetizar respuestas a partir de resultados de búsqueda.
+    """
     model = _resolve_model()
     res = client.chat.completions.create(
         model=model,
@@ -154,19 +168,30 @@ class AgentSession:
 
     def _process_turn(self, user_text: str) -> dict:
         """
-        Procesa un turno completo.
+        Procesa un turno completo incluyendo búsquedas web inline.
+
+        Flujo para search_web:
+          1. LLM genera TOOL_CALL search_web con query geolocalizada
+          2. Dispatcher ejecuta la búsqueda y retorna status="ok" con
+             el bloque de resultados formateado para el LLM
+          3. Se inyecta como TOOL_RESULT en el historial
+          4. El LLM itera una vuelta más y sintetiza la respuesta final
+          5. Se retorna como respuesta normal (action="respond")
+
+        No hay más flujo de "web_search" separado — todo es inline.
+
         Retorna:
             {
-                "action": "respond" | "web_search" | "exit",
+                "action": "respond" | "exit",
                 "text": str,
-                "search_data": dict | None,
+                "search_data": None,   ← mantenido por compatibilidad con main.py
             }
         """
         self.history.append({"role": "user", "content": user_text})
 
-        # Loop interno: hasta 4 rondas de tool calls
-        for _ in range(4):
-            messages = [{"role": "system", "content": _build_system_prompt()}] + self.history[-10:]
+        # Loop interno: hasta 5 rondas (una extra para síntesis post-search)
+        for round_n in range(5):
+            messages = [{"role": "system", "content": _build_system_prompt()}] + self.history[-12:]
             response = _chat(messages)
 
             tool_call = _extract_tool_call(response)
@@ -179,34 +204,31 @@ class AgentSession:
             tool_name = tool_call.get("tool", "")
             tool_args = tool_call.get("args", {})
 
+            # Registrar el TOOL_CALL en historial
+            self.history.append({"role": "assistant", "content": response})
+
             # Ejecutar tool
             result = dispatch(tool_name, tool_args)
 
             if result["status"] == "clarify":
                 # El dispatcher necesita más info → responder con la pregunta
-                self.history.append({"role": "assistant", "content": response})
                 self.history.append({"role": "assistant", "content": result["question"]})
                 return {"action": "respond", "text": result["question"], "search_data": None}
 
-            if result["status"] == "web_search":
-                # Tool pesada — retornar para que el orquestador confirme
-                self.history.append({"role": "assistant", "content": response})
-                return {
-                    "action":      "web_search",
-                    "text":        result["result"],
-                    "search_data": result["data"],
-                }
-
             if result["status"] == "error":
                 error_msg = result["result"]
-                self.history.append({"role": "assistant", "content": response})
                 self.history.append({"role": "user", "content": f"TOOL_RESULT: {error_msg}"})
                 # Continuar loop para que el modelo responda el error
                 continue
 
-            # Tool ejecutada con éxito — inyectar resultado y continuar
-            self.history.append({"role": "assistant", "content": response})
-            self.history.append({"role": "user", "content": f"TOOL_RESULT: {result['result']}"})
+            # status == "ok" — tool ejecutada con éxito (incluye search_web)
+            # Inyectar resultado en historial y continuar el loop.
+            # Para search_web: el TOOL_RESULT contiene el bloque de resultados;
+            # el LLM lo leerá en la próxima iteración y sintetizará la respuesta.
+            self.history.append({
+                "role":    "user",
+                "content": f"TOOL_RESULT: {result['result']}"
+            })
 
         # Si se agotaron los rounds, dar respuesta genérica
         return {"action": "respond", "text": "Procesé lo que pediste.", "search_data": None}
@@ -234,28 +256,19 @@ class AgentSession:
                 continue
 
             result = self._process_turn(user_text)
+            self.speak(result["text"])
 
-            if result["action"] == "web_search":
-                self.speak(result["text"])
-                confirm = self.listen()
-                if confirm.lower() in ("sí", "si", "dale", "yes", "sí", "confirmo"):
-                    self._enter_web_mode(result["search_data"])
-                else:
-                    self.speak("Entendido, cancelé la búsqueda. ¿Qué más necesitás?")
-            else:
-                self.speak(result["text"])
-
-            if len(self.history) > 20:
-                self.history = self.history[-20:]
+            if len(self.history) > 24:
+                self.history = self.history[-24:]
 
     def run_turn(self, user_text: str, return_mode: str = None) -> dict:
         """
         Ejecuta UN turno del agente desde otro modo (tutor inglés, ingeniería).
         Retorna:
             {
-                "action": "respond" | "web_search" | "return_to_mode",
+                "action": "respond" | "return_to_mode",
                 "text": str,
-                "search_data": dict | None,
+                "search_data": None,
                 "return_mode": str | None,
             }
         """
@@ -263,43 +276,7 @@ class AgentSession:
         result = self._process_turn(user_text)
         result["return_mode"] = return_mode
 
-        if result["action"] == "respond":
-            result["action"] = "return_to_mode"
+        # Siempre retornar al modo anterior — ya no hay interrupción por web_search
+        result["action"] = "return_to_mode"
 
         return result
-
-    def _enter_web_mode(self, search_data: dict) -> None:
-        """
-        Modo tutor con contexto de búsqueda web.
-        El agente usa los resultados como base para responder preguntas.
-        """
-        context = search_data["search_result"]["context"]
-        query   = search_data["query"]
-
-        web_system = (
-            f"Sos un asistente que acaba de buscar en internet sobre: \"{query}\".\n"
-            f"Estos son los resultados encontrados:\n\n{context}\n\n"
-            f"Usá esta información para responder las preguntas del usuario. "
-            f"Hablás en español rioplatense natural. "
-            f"Si el usuario dice 'listo', 'ya está' o 'salir', cerrá el modo de búsqueda."
-        )
-        web_history = []
-
-        print(f"\n  [BÚSQUEDA] Entrando en modo tutor con contexto de: \"{query}\"")
-        print(f"  Escribí 'listo' cuando termines.\n")
-
-        self.speak(f"Listo, encontré información sobre \"{query}\". ¿Qué querés saber?")
-
-        while True:
-            user_text = self.listen()
-            if not user_text:
-                continue
-            if user_text.lower() in ("listo", "ya está", "ya esta", "salir", "exit"):
-                self.speak("Cerrando modo búsqueda. ¿Necesitás algo más?")
-                break
-
-            web_history.append({"role": "user", "content": user_text})
-            messages = [{"role": "system", "content": web_system}] + web_history[-6:]
-            response = _chat(messages, temperature=0.3, max_tokens=500)
-            web_history.append({"role": "assistant", "content": response})
-            self.speak(response)

@@ -35,14 +35,11 @@ LT_PORT    = 8081
 LT_URL     = f"http://localhost:{LT_PORT}/v2/languages"
 LT_TIMEOUT = 30  # segundos máximos para esperar que arranque
 
-# Busca el JAR automáticamente en ubicaciones comunes
+
 def _find_jar() -> str | None:
-    # 1. Variable de entorno explícita
     env_path = os.environ.get("LT_JAR_PATH")
     if env_path and os.path.exists(env_path):
         return env_path
-
-    # 2. ~/languagetool/ (instalación típica en Linux)
     patterns = [
         os.path.expanduser("~/languagetool/LanguageTool-*/languagetool-server.jar"),
         os.path.expanduser("~/LanguageTool-*/languagetool-server.jar"),
@@ -52,8 +49,7 @@ def _find_jar() -> str | None:
     for pattern in patterns:
         matches = glob.glob(pattern)
         if matches:
-            return sorted(matches)[-1]  # versión más nueva si hay varias
-
+            return sorted(matches)[-1]
     return None
 
 
@@ -67,10 +63,9 @@ class LTServer:
         self.jar_path = jar_path or _find_jar()
         self._process: subprocess.Popen | None = None
         self.running  = False
-        self._already_running = False  # si LT ya estaba corriendo antes de nosotros
+        self._already_running = False
 
     def _is_up(self) -> bool:
-        """Chequea si el servidor ya está respondiendo."""
         try:
             resp = requests.get(LT_URL, timeout=3)
             return resp.status_code == 200
@@ -78,14 +73,12 @@ class LTServer:
             return False
 
     def start(self) -> bool:
-        """
-        Arranca el servidor. Si ya está corriendo, no hace nada.
-        Retorna True si el servidor está disponible.
-        """
-        # Si ya estaba corriendo (ej: iniciado manualmente), usarlo
         if self._is_up():
-            print("  [LT] Servidor ya estaba corriendo — usando instancia existente.")
-            self._already_running = True
+            if self._process is None:
+                print("  [LT] Servidor ya estaba corriendo — usando instancia existente.")
+                self._already_running = True
+            else:
+                print("  [LT] Proceso propio aún activo — reusando.")
             self.running = True
             return True
 
@@ -113,7 +106,7 @@ class LTServer:
                 cwd=jar_dir,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                preexec_fn=os.setsid,  # grupo de procesos para matar limpio
+                preexec_fn=os.setsid,
             )
         except FileNotFoundError:
             print("  [LT] ⚠ Java no encontrado. Instalalo con: sudo apt install default-jre")
@@ -124,7 +117,6 @@ class LTServer:
             self.running = False
             return False
 
-        # Esperar a que responda
         print(f"  [LT] Esperando que el servidor levante (máx {LT_TIMEOUT}s)...", end="", flush=True)
         deadline = time.time() + LT_TIMEOUT
         while time.time() < deadline:
@@ -140,35 +132,60 @@ class LTServer:
         self.running = False
         return False
 
-    def stop(self) -> None:
-        """Apaga el servidor si fue iniciado por nosotros."""
-        if self._already_running:
-            # No apagamos algo que no arrancamos
-            print("  [LT] Servidor externo — no se apaga.")
-            self.running = False
-            return
-
-        if self._process is None:
-            self.running = False
-            return
-
+    @staticmethod
+    def _kill_port(port: int) -> bool:
+        """Mata cualquier proceso escuchando en el puerto dado. Retorna True si mató algo."""
         try:
-            # Matar todo el grupo de procesos (Java puede tener hijos)
-            os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
-            self._process.wait(timeout=5)
-            print("  [LT] Servidor apagado.")
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"  [LT] Error al apagar: {e}")
-        finally:
-            self._process = None
-            self.running  = False
+            # fuser es más liviano que lsof en sistemas embebidos
+            result = subprocess.run(
+                ["fuser", "-k", "-TERM", f"{port}/tcp"],
+                capture_output=True, timeout=5
+            )
+            if result.returncode == 0:
+                time.sleep(1)  # grace period para SIGTERM
+                # Si aún responde, SIGKILL
+                subprocess.run(
+                    ["fuser", "-k", "-KILL", f"{port}/tcp"],
+                    capture_output=True, timeout=3
+                )
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        return False
 
-    # ── Context manager ───────────────────────────────────────────────────────
+    def stop(self) -> None:
+        if self._process is not None:
+            # Tenemos el handle — matar por grupo de procesos
+            try:
+                os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
+                self._process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
+                    self._process.wait(timeout=3)
+                except Exception:
+                    pass
+            except (ProcessLookupError, OSError):
+                pass
+            except Exception as e:
+                print(f"  [LT] Error al apagar: {e}")
+        elif self._already_running:
+            # No tenemos el handle pero sabemos que está en el puerto — matar por puerto
+            self._kill_port(LT_PORT)
+
+        self._process = None
+        self._already_running = False
+        self.running = False
+
+        # Confirmar muerte del puerto (máx 5s)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if not self._is_up():
+                print("  [LT] Servidor apagado.")
+                break
+            time.sleep(0.3)
+        else:
+            print("  [LT] ⚠ El servidor sigue respondiendo tras el shutdown.")
 
     def __enter__(self):
         self.start()
@@ -176,15 +193,14 @@ class LTServer:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
-        return False  # no suprimir excepciones
+        return False
 
 
-# ── Singleton global para main.py ─────────────────────────────────────────────
+# ── Singleton global ──────────────────────────────────────────────────────────
 _lt_server: LTServer | None = None
 
 
 def get_server() -> LTServer:
-    """Retorna la instancia global del servidor LT."""
     global _lt_server
     if _lt_server is None:
         _lt_server = LTServer()
@@ -192,13 +208,9 @@ def get_server() -> LTServer:
 
 
 def ensure_running() -> bool:
-    """Arranca el servidor si no está corriendo. Retorna True si está disponible."""
     return get_server().start()
 
 
 def ensure_stopped() -> None:
-    """Apaga el servidor si fue iniciado por nosotros."""
-    global _lt_server
     if _lt_server is not None:
         _lt_server.stop()
-        _lt_server = None

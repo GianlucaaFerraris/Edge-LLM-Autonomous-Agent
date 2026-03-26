@@ -6,12 +6,15 @@ y genera preguntas de clarificación cuando es necesario.
 
 Retorna siempre:
     {
-        "status":   "ok" | "clarify" | "error" | "web_search",
-        "result":   str,           ← texto para mostrar al usuario
+        "status":   "ok" | "clarify" | "error",
+        "result":   str,           ← texto para mostrar al usuario / contexto para LLM
         "question": str | None,    ← pregunta de clarificación si status="clarify"
         "tool":     str,           ← nombre de la tool ejecutada
-        "data":     dict | None,   ← datos estructurados (para web_search)
+        "data":     dict | None,   ← datos estructurados (unused en search_web nuevo flujo)
     }
+
+Nota: search_web ya no retorna status="web_search". Los resultados se
+inyectan como TOOL_RESULT en el historial del agente para síntesis inline.
 """
 
 import datetime
@@ -23,6 +26,23 @@ from . import local_calendar as cal
 from . import reminder_manager as reminders
 from . import wa_stub as wa
 from . import web_search as search
+
+_PLACE_KEYWORDS = {
+    "restaurante", "restaurant", "comida", "comer", "almorzar", "cenar",
+    "almuerzo", "cena", "desayuno", "café", "cafetería", "bar", "pizzería",
+    "hamburguesería", "sushi", "panadería", "heladería", "confitería",
+    "local", "negocio", "tienda", "comercio", "farmacia", "supermercado",
+    "ferretería", "librería", "kiosco", "peluquería", "veterinaria",
+    "gym", "gimnasio", "hospital", "clínica", "banco",
+    "hotel", "hostel", "alojamiento", "teatro", "cine", "museo",
+    "parque", "plaza", "boliche", "cervecería",
+    "dónde", "donde", "cercano", "cerca",
+    "top 3", "top 5", "mejores", "recomendación", "recomendame",
+}
+
+# Mínimo de resultados de DDG Maps para considerar que la respuesta
+# es suficiente y no necesita fallback a fetch.
+_MAPS_MIN_RESULTS = 2
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -36,11 +56,13 @@ def _clarify(tool: str, question: str) -> dict:
 def _error(tool: str, msg: str) -> dict:
     return {"status": "error", "tool": tool, "result": msg, "question": None, "data": None}
 
-def _web(tool: str, result: str, data: dict) -> dict:
-    return {"status": "web_search", "tool": tool, "result": result, "question": None, "data": data}
-
 
 # ── Dispatcher principal ──────────────────────────────────────────────────────
+
+def _is_place_query(query: str) -> bool:
+    q_lower = query.lower()
+    return any(kw in q_lower for kw in _PLACE_KEYWORDS)
+
 
 def dispatch(tool: str, args: dict) -> dict:
     """
@@ -144,7 +166,6 @@ def _cal_add(args: dict) -> dict:
     except ValueError as e:
         err = str(e)
         if "Conflicto" in err:
-            # Ofrecer slot alternativo
             try:
                 start_t = cal._parse_time(start)
                 end_t   = cal._parse_time(end)
@@ -279,7 +300,6 @@ def _wa_send(args: dict) -> dict:
     if not message:
         return _clarify("wa_send", f"¿Qué le mando a {contact}?")
 
-    # Verificar si el contacto es ambiguo
     matches = wa.resolve_contact(contact)
     if not matches:
         return _clarify("wa_send",
@@ -317,15 +337,56 @@ def _wa_read(args: dict) -> dict:
 # ── web search ────────────────────────────────────────────────────────────────
 
 def _search_web(args: dict) -> dict:
+    """
+    Estrategia en cascada para búsquedas web:
+ 
+    QUERY DE LUGAR FÍSICO:
+      1. DDG Maps (search_places) — datos estructurados, ~1s, sin fetch
+         Si retorna >= _MAPS_MIN_RESULTS → usar directo, terminar.
+      2. Si Maps < _MAPS_MIN_RESULTS → search_and_fetch con fetch_top_n=2
+         Fetchea HTML de las 2 primeras páginas (Tripadvisor, Tourbly, etc.)
+         BeautifulSoup extrae texto real con nombres/direcciones/ratings.
+ 
+    QUERY GENERAL (precios, noticias, conceptos):
+      - search_and_fetch con fetch_top_n=1 directamente.
+ 
+    Todos los caminos retornan status="ok" con el contexto LLM-ready.
+    El agente inyecta como TOOL_RESULT y el LLM sintetiza la respuesta.
+    """
     query = args.get("query", "").strip()
     if not query:
-        return _clarify("search_web",
-                        "¿Qué querés que busque? Dame más detalles para hacer una buena búsqueda.")
-
-    result = search.search(query)
-    summary = search.format_results_summary(result)
-
+        return _clarify("search_web", "¿Qué querés que busque? Dame más detalles.")
+ 
+    is_place = _is_place_query(query)
+ 
+    # ── Rama 1: query de lugar físico ─────────────────────────────────────────
+    if is_place:
+        print(f"  [SEARCH] Maps query: \"{query}\"...")
+        maps_result = search.search_places(query, max_results=8)
+ 
+        if maps_result["success"] and len(maps_result.get("places", [])) >= _MAPS_MIN_RESULTS:
+            count = len(maps_result["places"])
+            print(f"  [SEARCH] Maps: {count} lugar(es) — usando datos estructurados.")
+            context_block = search.format_places_for_llm(maps_result)
+            return _ok("search_web", context_block)
+ 
+        # Maps insuficiente → fallback a fetch
+        maps_count = len(maps_result.get("places", [])) if maps_result["success"] else 0
+        print(f"  [SEARCH] Maps: {maps_count} resultado(s) — fallback a fetch (top 2)...")
+        result = search.search_and_fetch(query, max_results=5, fetch_top_n=2)
+ 
+    # ── Rama 2: query general ─────────────────────────────────────────────────
+    else:
+        print(f"  [SEARCH] General query: \"{query}\" (fetch top 1)...")
+        result = search.search_and_fetch(query, max_results=5, fetch_top_n=1)
+ 
+    # ── Resultado final ───────────────────────────────────────────────────────
     if not result["success"]:
-        return _error("search_web", result["error"])
-
-    return _web("search_web", summary, {"search_result": result, "query": query})
+        return _error("search_web", f"No pude buscar: {result['error']}")
+ 
+    if not result["results"]:
+        return _error("search_web", f"No encontré resultados para: \"{query}\"")
+ 
+    context_block = search.format_results_for_llm(result)
+    print(f"  [SEARCH] Contexto listo ({len(context_block)} chars).")
+    return _ok("search_web", context_block)

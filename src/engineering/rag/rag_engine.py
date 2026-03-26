@@ -190,7 +190,7 @@ class RAGEngine:
         # Load embedding model
         try:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self.model_name)
+            self._model = SentenceTransformer(self.model_name, device="cpu")
         except ImportError:
             print("  [RAG] sentence-transformers not installed: pip install sentence-transformers")
             return False
