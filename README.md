@@ -8,7 +8,6 @@
 
 ![Python](https://img.shields.io/badge/Python-0d1117?style=for-the-badge&logo=python&logoColor=3776AB)
 ![Ollama](https://img.shields.io/badge/Ollama-0d1117?style=for-the-badge&logo=ollama&logoColor=ffffff)
-![ROS2](https://img.shields.io/badge/ROS2-0d1117?style=for-the-badge&logo=ros&logoColor=22314E)
 ![NVIDIA Jetson](https://img.shields.io/badge/Jetson_Orin_Nano-0d1117?style=for-the-badge&logo=nvidia&logoColor=76B900)
 ![Radxa](https://img.shields.io/badge/Radxa_Rock_5B-0d1117?style=for-the-badge&logo=raspberrypi&logoColor=A22846)
 ![SQLite](https://img.shields.io/badge/SQLite-0d1117?style=for-the-badge&logo=sqlite&logoColor=003B57)
@@ -25,31 +24,37 @@
 The result is a system that can reason, schedule, search, teach, and *see* — all on hardware that fits in your hand.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              AGENTY PIPELINE                                    │
-│                                                                                 │
-│   Voice (Whisper) / Text ──► Orchestrator ──► Intent Classifier                 │
-│                                    │              (single LLM call)             │
-│                    ┌───────────────┼───────────────────┐                        │
-│                    ▼               ▼                   ▼                        │
-│             English Tutor    Engineering Tutor    Agent Session                 │
-│                    │               │                  │                         │
-│             ┌──────┴──────┐  ┌─────┴──────┐   ┌───────┴────────┐                │
-│             ▼             ▼  ▼            ▼   ▼               ▼                 │
-│       LanguageTool    LLM  FAISS RAG    LLM  Tool         Web Search            │
-│       (port 8081)  Feedback  Index   Tutor  Dispatcher    (DuckDuckGo)          │
-│       Grammar        TTS-  (FAISS +  Mentor  │                │                 │
-│       Detection     ready   MiniLM)          │                │                 │
-│                                         ┌────┴────────────────┘                 │
-│                                         ▼                     │                 │
-│                                  SQLite Storage               │                 │
-│                               (tasks / calendar /             │                 │
-│                                reminders / WA stub)           │                 │
-│                                                               │                 │
-│                                  OAK-D Pro                    │                 │
-│                            Stereo Depth + YOLO  ──────────────┘                 │
-│                             (Perception Module)                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│                                  AGENTY PIPELINE                                     │
+│                                                                                      │
+│  ┌─────────────────────────────┐                                                     │
+│  │         VOICE I/O           │                                                     │
+│  │  Mic → Moonshine STT (~50ms)│──► text ──► Orchestrator ──► Intent Classifier      │
+│  │  Piper TTS (~20ms) ← audio  │◄── text ◄───────────────────  (single LLM call)    │
+│  └─────────────────────────────┘          │                                          │
+│     Per-mode voice routing:               │                                          │
+│       idle/agent → es_MX ald              │                                          │
+│       engineering → es_ES davefx          ├─────────────────────┐                   │
+│       english → es_AR daniela /           │                     │                   │
+│                 en_US amy                 ▼                     ▼                   │
+│                                    English Tutor    Engineering Tutor  Agent Session │
+│                                           │               │                │         │
+│                                    ┌──────┴──────┐  ┌─────┴──────┐  ┌──────┴──────┐ │
+│                                    ▼             ▼  ▼            ▼  ▼             ▼ │
+│                              LanguageTool    LLM  FAISS RAG    LLM  Tool      Web   │
+│                              (port 8081)  Feedback  Index   Tutor  Dispatcher Search│
+│                              Grammar               (FAISS +  Mentor  │              │
+│                              Detection              MiniLM)          │              │
+│                                                              ┌───────┘              │
+│                                                              ▼                      │
+│                                                       SQLite Storage                │
+│                                                    (tasks / calendar /              │
+│                                                     reminders / WA stub)            │
+│                                                                                     │
+│                                  OAK-D Pro ─────────────────────────────────────►  │
+│                            Stereo Depth + YOLO                                      │
+│                             (Perception Module)                                     │
+└──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -64,7 +69,7 @@ The result is a system that can reason, schedule, search, teach, and *see* — a
 | ✍️ **Grammar-aware English tutor** | LanguageTool server runs locally on the SBC — zero cloud dependency for grammar correction |
 | 🗂️ **600 conversation topics** | Generated entirely by the local LLM, stored in `topics.json` — no external dataset |
 | 👁️ **OAK-D Pro perception** | Real-time object detection + stereo depth + spatial reasoning via DepthAI NPU |
-| 🗣️ **Multimodal I/O** | Whisper STT + Piper/Kokoro TTS hooks — speak to it, it speaks back |
+| 🗣️ **Multimodal voice I/O** | Moonshine STT (~50ms on CPU) + Piper TTS (~20ms VITS/ONNX) — per-mode voice routing with bilingual auto-detection |
 | 🔌 **Zero cloud dependency** | All inference, storage and scheduling run 100% on-device |
 | 📅 **Persistent memory** | SQLite-backed tasks, calendar, and reminders survive reboots |
 | ⚡ **Sub-second tool calls** | 0.11s TTFT for agent tool dispatch on GPU; NPU path targets real-time |
@@ -256,6 +261,112 @@ OAK-D Pro  ──►  Left + Right stereo pair  ──►  Onboard depth engine
 
 ---
 
+## Voice I/O — STT + TTS Pipeline
+
+The voice subsystem is a thin facade (`voice_io.py`) over two independent engines: **Moonshine** for speech-to-text and **Piper** for text-to-speech. Both run entirely on CPU — no GPU required, no cloud calls.
+
+### STT — Moonshine
+
+[Moonshine](https://github.com/usefulsensors/moonshine) is a family of encoder-decoder ASR models optimised for real-time transcription on ARM CPUs. It uses a Conformer encoder + causal decoder trained on English and Spanish, with ONNX export for deployment.
+
+```
+Microphone (16 kHz, mono)
+       │
+       ▼
+  VAD (energy-based)          ← silences < 300ms are bridged; speech end = 600ms silence
+       │
+       ▼
+  Moonshine encoder (ONNX)    ← ~20ms on RK3588 A76 cores (NEON SIMD)
+       │
+       ▼
+  Causal decoder (greedy)     ← total TTFT ~50ms for ≤5s utterances
+       │
+       ▼
+  Transcript text  ──────────────► main.py intent loop
+```
+
+**Model selection by mode** — `STTEngine.set_language()` swaps between the Spanish and English Moonshine models at session boundaries. The swap costs ~500ms (ONNX model reload) and is only triggered when the language actually changes, not at every mode transition.
+
+| Language | Model | Size | WER (approx.) |
+|----------|-------|------|---------------|
+| Spanish  | `moonshine/base` fine-tuned es | ~90 MB | competitive with Whisper-small |
+| English  | `moonshine/base` | ~90 MB | competitive with Whisper-small |
+
+**Keyboard fallback** — `--keyboard` replaces microphone capture with `input()`. The rest of the pipeline (intent classification, LLM, TTS) is unchanged. Useful for development without audio hardware.
+
+### TTS — Piper
+
+[Piper](https://github.com/rhasspy/piper) is a VITS-based neural TTS system. Models are exported to ONNX and run via OnnxRuntime, which on ARM uses NEON SIMD intrinsics automatically — no manual kernel tuning needed.
+
+```
+LLM response text
+       │
+       ▼
+  detect_language(text)        ← heuristic word-set match, no LLM call, ~0.1ms
+       │
+       ▼
+  voice_key selection          ← per-mode routing table (see below)
+       │
+       ▼
+  PiperVoice.load(model.onnx)  ← model stays resident once loaded
+       │
+       ▼
+  VITS synthesis (ONNX/NEON)   ← ~20ms for a sentence on RK3588
+       │
+       ▼
+  WAV buffer (BytesIO)
+       │
+       ▼
+  sounddevice.play()           ← PortAudio backend, honours system default output
+  └── fallback: aplay -r {sr} -f S16_LE -t raw
+```
+
+**Per-mode voice routing:**
+
+| Mode | Spanish voice | English voice | Auto-detect lang |
+|------|--------------|---------------|-----------------|
+| `idle` / `agent` | `es_MX-ald-medium` | — (always ES) | No |
+| `engineering` | `es_ES-davefx-medium` | `en_US-hfc_male-medium` | Yes |
+| `english` | `es_AR-daniela-high` | `en_US-amy-medium` | Yes |
+
+Modes with `auto_detect_tts=True` call `detect_language()` on each response before selecting a voice. This is a word-set heuristic (no LLM inference) that adds ~0.1ms — acceptable for real-time TTS.
+
+**`length_scale` compatibility** — the `length_scale` prosody parameter controlling speech rate is injected via runtime introspection of `PiperVoice.synthesize()`. Versions ≤1.2.0 of `piper-tts` accept it as a direct kwarg; newer versions require a `SynthesisConfig` object or don't expose it. The engine handles all three cases transparently.
+
+### Audio output — device selection
+
+`sounddevice` (PortAudio) is the preferred backend because it honours the system's default audio output, which includes USB audio interfaces, HDMI, and Bluetooth headphones. The ALSA `aplay` fallback defaults to `hw:0,0` and may not match the active output device.
+
+```bash
+# Recommended
+pip install sounddevice
+sudo apt install libportaudio2   # if PortAudio not present
+
+# Diagnose the active ALSA device if sounddevice is unavailable
+aplay -l
+aplay -D plughw:1,0 /path/to/test.wav   # target a specific card explicitly
+```
+
+### VoiceIO mode lifecycle
+
+```
+main() starts → VoiceIO(idle)
+      │
+      ├─ user triggers english  → set_mode("english")
+      │    STT reloads to EN model (~500ms, once)
+      │    TTS routes to es_AR-daniela / en_US-amy per utterance
+      │
+      ├─ agent interrupt inside english → set_mode("agent")
+      │    STT stays ES (agent always speaks Spanish)
+      │    TTS uses agent voice (es_MX-ald)
+      │    → resolve → set_mode("english")  ← restored
+      │
+      └─ user exits english → set_mode("idle")
+           STT reloads to ES model (~500ms)
+```
+
+---
+
 ## Orchestrator flow
 
 ```
@@ -307,68 +418,100 @@ OAK-D Pro  ──►  Left + Right stereo pair  ──►  Onboard depth engine
 
 ```
 Agenty-Edge-Assistant/
-├── src/
-│   ├── main.py
-│   ├── english/
-│   │   ├── tutor_session.py          ← conversation loop + grammar feedback
-│   │   ├── language_tool_server.py   ← LanguageTool process lifecycle
-│   │   └── topics.json               ← 600 LLM-generated conversation topics
-│   ├── engineering/
-│   │   ├── engineering_session.py    ← tutor loop with RAG integration
-│   │   └── rag/
-│   │       ├── build_index.py        ← documents → chunks → embeddings → FAISS
-│   │       ├── rag_engine.py         ← domain check + FAISS search + context format
-│   │       ├── docs/                 ← source PDFs/EPUBs (not committed)
-│   │       └── index/                ← generated FAISS index (not committed)
-│   ├── engineering/test/
-│   │   ├── eval_retrieval.py         ← Precision@3 evaluation with golden set
-│   │   ├── generate_responses.py     ← batch LLM response generation
-│   │   └── eval_faithfulness.py      ← NLI-based faithfulness scoring
-│   ├── agent/
-│   │   ├── agent_session.py
-│   │   ├── dispatcher.py
-│   │   ├── task_manager.py
-│   │   ├── local_calendar.py
-│   │   ├── reminder_manager.py
-│   │   ├── web_search.py
-│   │   ├── wa_stub.py
-│   │   └── db/
-│   ├── perception/
-│   │   ├── oak_pipeline.py
-│   │   ├── spatial_engine.py
-│   │   └── detection_bridge.py
-│   └── orchestrator/
-│       ├── orchestrator.py
-│       └── context_manager.py
+├── requirements.txt
+├── setup_voice.sh
+└── src/
+    ├── main.py
+    ├── voice/
+    │   ├── voice_io.py               ← VoiceIO facade: STT + TTS unified interface
+    │   ├── stt_engine.py             ← Moonshine ASR engine (ONNX, VAD, keyboard fallback)
+    │   └── tts_engine.py             ← Piper TTS engine (VITS/ONNX, multi-voice, per-mode routing)
+    ├── orchestrator/
+    │   ├── orchestrator.py           ← greeting, clarification, return-prompt generation
+    │   ├── intent_classifier.py      ← per-mode intent routing (single LLM call)
+    │   └── context_manager.py        ← session state across mode switches
+    ├── agent/
+    │   ├── agent_session.py          ← tool-call loop + interrupt handling
+    │   ├── dispatcher.py             ← tool name → function routing
+    │   ├── task_manager.py           ← SQLite-backed task CRUD
+    │   ├── local_calendar.py         ← SQLite-backed calendar + recurring events
+    │   ├── reminder_manager.py       ← reminder scheduler + alert popping
+    │   ├── web_search.py             ← DuckDuckGo search wrapper
+    │   ├── wa_stub.py                ← WhatsApp send/read stub
+    │   └── db/                       ← SQLite databases (not committed)
+    ├── engineering/
+    │   ├── engineering_session.py    ← tutor loop with RAG integration
+    │   ├── rag/
+    │   │   ├── rag_engine.py         ← domain check + FAISS search + context format
+    │   │   ├── build_index.py        ← documents → chunks → embeddings → FAISS index
+    │   │   ├── docs/                 ← source PDFs (not committed — add your own)
+    │   │   └── index/                ← generated FAISS index (not committed)
+    │   └── test/
+    │       ├── eval_retrieval.py     ← Precision@3 evaluation with golden set
+    │       ├── eval_faithfulness.py  ← NLI-based faithfulness scoring
+    │       ├── eval_ragas.py         ← RAGAS end-to-end evaluation
+    │       └── generate_responses.py ← batch LLM response generation
+    ├── english/
+    │   ├── tutor_session.py          ← conversation loop + grammar feedback
+    │   ├── language_tool_server.py   ← LanguageTool process lifecycle
+    │   ├── language_tool.py          ← grammar error parsing + formatting
+    │   └── topics.json               ← 600 LLM-generated conversation topics
+    ├── finetuning/
+    │   ├── finetune_qwen.py                      ← QLoRA fine-tuning entry point
+    │   ├── generate_dataset_engineer_tutor.py    ← engineering tutor dataset gen
+    │   ├── generate_dataset_english_tutor.py     ← English tutor dataset gen
+    │   ├── generate_dataset_function_calling.py  ← agent/tool-call dataset gen
+    │   ├── generate_final_dataset.py             ← merge + deduplicate all splits
+    │   ├── generate-topics.py                    ← LLM-driven topic generation
+    │   ├── evidence_validator.py                 ← faithfulness check for dataset entries
+    │   ├── language_tool_wrapper.py              ← LanguageTool integration for dataset
+    │   └── datasets/                             ← generated JSONL datasets (not committed)
+    └── test/
+        ├── test_modes.py             ← end-to-end mode integration tests
+        ├── test_latency.py           ← TTFT + total latency benchmarks
+        ├── manual_chat.py            ← interactive CLI for manual testing
+        └── conftest.py               ← pytest fixtures
 ```
 
 ---
 
 ## Installation
 
-### 1. Python dependencies
+### 1. Clone and create environment
 
 ```bash
-conda activate tutor_env
-pip install openai requests duckduckgo-search depthai
-pip install sentence-transformers faiss-cpu pymupdf   # RAG pipeline
+git clone https://github.com/GianlucaaFerraris/Agenty-Edge-Assistant.git
+cd Agenty-Edge-Assistant
+
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+pip install -r requirements.txt
 ```
+
+One system-level dependency is required for audio output (PortAudio, used by `sounddevice`):
+
+```bash
+sudo apt install libportaudio2
+```
+
+Piper voice models are downloaded automatically to `~/.local/share/piper-voices/` on the first `speak()` call. The five voices used by Agenty total ~150 MB.
 
 ### 2. Register the model in Ollama
 
 ```bash
-cd ~/Desktop/Agenty-Edge-Assistant/model/gguf
+cd model/gguf
 ollama create asistente -f Modelfile
 ollama list   # verify "asistente" appears
 ```
 
 ### 3. Build the RAG index
 
-Place PDFs in `src/engineering/rag/docs/` (subdirectories supported):
+Place your PDFs in `src/engineering/rag/docs/` (subdirectories supported), then:
 
 ```bash
 python src/engineering/rag/build_index.py
-# Expected output: ~9,400 chunks, ~35s build time, 38MB index
+# Expected: ~9,400 chunks · ~35s build time · 38 MB index
 ```
 
 ### 4. LanguageTool (English tutor)
@@ -378,7 +521,6 @@ Download the LanguageTool standalone server from [languagetool.org](https://lang
 ### 5. OAK-D Pro setup
 
 ```bash
-pip install depthai
 python -c "import depthai as dai; print(dai.Device.getAllAvailableDevices())"
 python src/perception/oak_pipeline.py --test
 ```
@@ -388,11 +530,25 @@ python src/perception/oak_pipeline.py --test
 ## Running
 
 ```bash
-# Full assistant
+# Full assistant — voice in, voice out
 cd ~/Desktop/Agenty-Edge-Assistant
 python src/main.py
 
-# Standalone modules
+# Keyboard input + voice output (useful when mic unavailable)
+python src/main.py --keyboard
+
+# Full text mode — no audio hardware required (dev/CI)
+python src/main.py --print-only
+
+# Keyboard input + text output (pure text, identical to v2 behaviour)
+python src/main.py --keyboard --print-only
+
+# Standalone voice module tests
+python src/voice/tts_engine.py --voice agent "Hola, ¿qué necesitás?"
+python src/voice/tts_engine.py --print-only   # verify without audio hardware
+python src/voice/voice_io.py --keyboard       # end-to-end VoiceIO test
+
+# Standalone session modules
 python src/engineering/engineering_session.py
 python src/english/tutor_session.py
 python src/agent/agent_session.py
@@ -408,16 +564,20 @@ python src/engineering/test/eval_faithfulness.py    # faithfulness scoring
 
 ## Latency benchmarks
 
-> Measured on dev machine with NVIDIA GPU. Numbers on target SBCs pending hardware deployment.
+> Measured on dev machine with NVIDIA GPU unless noted. SBC numbers from ARM Cortex-A76 (RK3588) where available.
 
-| Mode | TTFT | Total | Notes |
-|---|---|---|---|
-| Mode detection | 0.11s | 0.21s | |
-| Agent tool call | 0.11s | 0.62s | |
-| English tutor (short turn) | 0.15s | 1.34s | LanguageTool adds <50ms local |
-| Engineering tutor (no RAG) | 0.12s | 11.35s | |
-| Engineering tutor (with RAG) | ~0.22s | ~12-13s | +100ms embed, <10ms FAISS |
-| OAK-D detection (VPU) | — | ~33ms | 30 FPS, zero main CPU cost |
+| Stage | Latency | Notes |
+|---|---|---|
+| **STT — Moonshine** | ~50ms | Utterance encode + greedy decode on A76 NEON, ≤5s audio |
+| **TTS — Piper VITS** | ~20ms | Per-sentence synthesis on A76 NEON (ONNX/OnnxRuntime) |
+| **Language detection** | ~0.1ms | Heuristic word-set match, zero LLM inference |
+| **STT model reload** | ~500ms | Only on language switch (es↔en), not per-turn |
+| Mode detection (LLM) | 0.11s | GPU dev machine |
+| Agent tool call | 0.11s TTFT / 0.62s total | GPU dev machine |
+| English tutor (short turn) | 0.15s TTFT / 1.34s total | LanguageTool adds <50ms local |
+| Engineering tutor (no RAG) | 0.12s TTFT / 11.35s total | GPU dev machine |
+| Engineering tutor (with RAG) | ~0.22s TTFT / ~12–13s total | +100ms embed, <10ms FAISS |
+| OAK-D detection (VPU) | ~33ms | 30 FPS, zero main CPU cost |
 
 ---
 
@@ -428,8 +588,9 @@ python src/engineering/test/eval_faithfulness.py    # faithfulness scoring
 - [x] **600 conversation topics** — fully LLM-generated, stored in topics.json
 - [x] RKLLM conversion — run LLM on RK3588 NPU (Rock 5B)
 - [x] Real WhatsApp — `whatsapp-web.js` on localhost
-- [x] Full TTS — Piper / Kokoro replacing `speak()` hooks
-- [x] Full STT — local Whisper replacing `listen()` hooks
+- [x] **Full TTS — Piper VITS** — 5 bilingual voices, per-mode routing, auto language detection
+- [x] **Full STT — Moonshine** — real-time transcription on CPU, bilingual, VAD-gated
+- [x] **STT+TTS integration** — VoiceIO facade wires voice I/O into all session modes
 - [ ] Autostart on SBC boot via `systemd`
 - [x] Multi-object tracking across frames (OAK-D)
 - [x] Latency benchmarks on Jetson Orin Nano and Radxa Rock 5B
