@@ -357,12 +357,28 @@ class TTSEngine:
 
     def _speak_python(self, text: str, model_path: Path,
                       length_scale: float) -> None:
-        """Síntesis usando el Python package de Piper."""
+        """
+        Síntesis usando el Python package de Piper.
+
+        API confirmada (piper-tts instalado):
+          synthesize(text, syn_config=None) -> Iterable[AudioChunk]
+
+        synthesize() NO recibe wav_file. Retorna un iterable de AudioChunk;
+        cada chunk tiene un atributo con los bytes PCM crudos. El caller
+        es responsable de escribirlos al WAV. No iterar = 0 frames escritos
+        = buffer de 44 bytes (solo header) = silencio sin error.
+
+        AudioChunk tiene al menos uno de estos atributos según sub-versión:
+          .audio        → bytes  (más común)
+          .audio_bytes  → bytes
+          .audio_array  → np.ndarray int16
+        """
         import piper
+        import inspect
 
         voice = piper.PiperVoice.load(str(model_path))
 
-        # Leer sample_rate del config del modelo
+        # Sample rate desde el config JSON del modelo
         config_path = str(model_path) + ".json"
         sample_rate = 22050
         try:
@@ -373,32 +389,44 @@ class TTSEngine:
         except Exception:
             pass
 
-        # Compatibilidad multi-versión de piper-tts:
-        # ≤1.2.0: synthesize(text, wav, length_scale=float)
-        # >1.2.0: length_scale removido como kwarg directo; puede existir
-        #         como SynthesisConfig o simplemente no estar soportado.
-        # Usamos introspección de firma para no asumir la versión instalada.
-        import inspect
-        _synth_params = inspect.signature(voice.synthesize).parameters
+        # Construir SynthesisConfig
+        syn_config = None
+        try:
+            from piper import SynthesisConfig
+            try:
+                syn_config = SynthesisConfig(length_scale=length_scale)
+            except TypeError:
+                # Esta sub-versión no acepta length_scale en el constructor
+                syn_config = SynthesisConfig()
+        except ImportError:
+            pass  # syn_config=None usa defaults del modelo
 
+        # Sintetizar y escribir frames chunk a chunk
         wav_buffer = io.BytesIO()
         with wave.open(wav_buffer, "wb") as wav_file:
             wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setsampwidth(2)   # 16-bit PCM
             wav_file.setframerate(sample_rate)
 
-            if "length_scale" in _synth_params:
-                # API antigua: kwarg directo
-                voice.synthesize(text, wav_file, length_scale=length_scale)
-            else:
-                # API nueva: intentar SynthesisConfig
-                try:
-                    from piper import SynthesisConfig
-                    _config = SynthesisConfig(length_scale=length_scale)
-                    voice.synthesize(text, wav_file, synthesis_config=_config)
-                except (ImportError, TypeError):
-                    # Fallback: sintetizar sin control de velocidad
-                    voice.synthesize(text, wav_file)
+            for chunk in voice.synthesize(text, syn_config):
+                # AudioChunk confirmed attributes (piper-tts installed version):
+                # .audio_int16_bytes → bytes  (int16 LE PCM, primary)
+                # .audio_int16_array → np.ndarray int16 (fallback)
+                # .audio_float_array → np.ndarray float32 (last resort)
+                if chunk.audio_int16_bytes:
+                    wav_file.writeframes(chunk.audio_int16_bytes)
+                elif chunk.audio_int16_array is not None:
+                    wav_file.writeframes(chunk.audio_int16_array.tobytes())
+                elif chunk.audio_float_array is not None:
+                    import numpy as np
+                    arr = (chunk.audio_float_array * 32767).astype(np.int16)
+                    wav_file.writeframes(arr.tobytes())
+
+        buf_size = wav_buffer.tell()
+        if buf_size < 100:
+            print(f"  [TTS] ⚠ Buffer WAV vacío ({buf_size}b). "
+                  f"Texto: {text[:40]!r}")
+            return
 
         wav_buffer.seek(0)
         self._play_wav(wav_buffer)
@@ -494,8 +522,23 @@ class TTSEngine:
                 pass
 
     def _play_wav(self, wav_buffer: io.BytesIO) -> None:
-        """Reproduce un WAV desde un buffer en memoria."""
-        # Intentar con sounddevice (más portable)
+        """
+        Reproduce un WAV desde un buffer en memoria.
+
+        Estrategia de selección de dispositivo (en orden):
+          1. sounddevice con device='pulse' → usa PulseAudio/PipeWire,
+             que ya sabe cuál es el output activo (auriculares/parlantes).
+          2. sounddevice con device=AGENTY_AUDIO_DEVICE (int) si está definido
+             como variable de entorno — override manual.
+          3. sounddevice con default del sistema (puede ser HDMI en algunos setups).
+          4. Fallback: aplay vía archivo temporal.
+
+        Para ver los índices de dispositivo disponibles:
+          python3 -c "import sounddevice as sd; print(sd.query_devices())"
+
+        Para forzar un dispositivo específico sin tocar el código:
+          export AGENTY_AUDIO_DEVICE=5   # índice numérico de sounddevice
+        """
         try:
             import sounddevice as sd
             import numpy as np
@@ -508,11 +551,17 @@ class TTSEngine:
                 audio_array = np.frombuffer(audio_data, dtype=np.int16)
                 audio_float = audio_array.astype(np.float32) / 32768.0
 
-            sd.play(audio_float, samplerate=sample_rate)
+            # Determinar dispositivo de salida
+            device = self._resolve_audio_device(sd)
+
+            sd.play(audio_float, samplerate=sample_rate, device=device)
             sd.wait()
             return
         except ImportError:
             pass
+        except Exception as e:
+            # No silenciar — ayuda a diagnosticar problemas de dispositivo
+            print(f"  [TTS] sounddevice error: {e} — usando fallback aplay")
 
         # Fallback: escribir a archivo temporal y usar aplay
         import tempfile
@@ -527,16 +576,81 @@ class TTSEngine:
             except OSError:
                 pass
 
+    def _resolve_audio_device(self, sd) -> object:
+        """
+        Determina el dispositivo de salida para sounddevice.
+
+        Prioridad:
+          1. Variable de entorno AGENTY_AUDIO_DEVICE (índice int o nombre string)
+          2. String 'pulse' — sounddevice acepta nombres parciales y PulseAudio/
+             PipeWire ya sabe cuál es el sink activo (auriculares, parlantes, etc.)
+          3. None → default del sistema
+
+        sounddevice.play(device=X) acepta:
+          - int  → índice del listado de sd.query_devices()
+          - str  → substring del nombre del dispositivo (case-insensitive)
+          - None → default del sistema (puede ser HDMI en laptops con dGPU)
+
+        Para ver los índices disponibles en tu sistema:
+          python3 -c "import sounddevice as sd; print(sd.query_devices())"
+        Para forzar un dispositivo sin tocar el código:
+          export AGENTY_AUDIO_DEVICE=11   # índice del dispositivo 'pulse'
+        """
+        # Override manual por env var (máxima prioridad)
+        env_device = os.environ.get("AGENTY_AUDIO_DEVICE")
+        if env_device is not None:
+            try:
+                device = int(env_device)
+            except ValueError:
+                device = env_device
+            if not getattr(self, "_audio_device_logged", False):
+                print(f"  [TTS] Audio device (env override): {device!r}")
+                self._audio_device_logged = True
+            return device
+
+        # Intentar PulseAudio/PipeWire por nombre string.
+        # sd.play(device='pulse') hace que PortAudio delegue el routing
+        # a PulseAudio, que ya tiene configurado el sink activo correcto.
+        # Verificamos que el nombre exista antes de usarlo.
+        try:
+            devs = sd.query_devices()
+            # query_devices() sin args retorna un DeviceList; indexar con
+            # un string hace búsqueda por substring — si no encuentra lanza
+            # ValueError, que capturamos para caer al default.
+            sd.query_devices('pulse', 'output')
+            device = 'pulse'
+        except (ValueError, Exception):
+            device = None  # default del sistema
+
+        if not getattr(self, "_audio_device_logged", False):
+            print(f"  [TTS] Audio device: {device!r} "
+                  f"(None = system default, 'pulse' = PulseAudio)")
+            self._audio_device_logged = True
+
+        return device
+
     def _play_wav_file(self, path: str) -> None:
         """Reproduce un archivo WAV con el player disponible."""
         player = self._find_audio_player()
         try:
-            if player in ("aplay", "paplay"):
-                subprocess.run([player, "-q", path],
-                             capture_output=True, timeout=30)
+            if player == "aplay":
+                # Intentar primero con el default del sistema (PulseAudio/dmix)
+                # Si falla, reintentar con plughw:1,0 (HDA Analog, típico en laptops)
+                result = subprocess.run(
+                    ["aplay", "-q", path],
+                    capture_output=True, timeout=30
+                )
+                if result.returncode != 0:
+                    subprocess.run(
+                        ["aplay", "-q", "-D", "plughw:1,0", path],
+                        capture_output=True, timeout=30
+                    )
+            elif player == "paplay":
+                subprocess.run(["paplay", path],
+                               capture_output=True, timeout=30)
             elif player == "sox":
                 subprocess.run(["play", "-q", path],
-                             capture_output=True, timeout=30)
+                               capture_output=True, timeout=30)
             elif player == "ffplay":
                 subprocess.run(
                     ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
