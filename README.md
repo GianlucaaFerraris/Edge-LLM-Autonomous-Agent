@@ -25,26 +25,31 @@
 The result is a system that can reason, schedule, search, teach, and *see* — all on hardware that fits in your hand.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        AGENTY  PIPELINE                         │
-│                                                                 │
-│   Voice / Text ──► Orchestrator ──► Intent Router               │
-│                          │                                      │
-│              ┌───────────┼───────────┐                          │
-│              ▼           ▼           ▼                          │
-│         English      Engineering   Agent                        │
-│          Tutor         Tutor      Session                       │
-│                                     │                           │
-│                          ┌──────────┴──────────┐                │
-│                          ▼                     ▼                │
-│                    Tool Dispatcher     Perception Module        │
-│                    (tasks/calendar/    OAK-D Pro NPU            │
-│                     reminders/web)    Stereo Depth + YOLO       │
-│                          │                     │                │
-│                          └──────────┬──────────┘                │
-│                                     ▼                           │
-│                              SQLite Storage                     │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                              AGENTY PIPELINE                                    │
+│                                                                                 │
+│   Voice (Whisper) / Text ──► Orchestrator ──► Intent Classifier                 │
+│                                    │              (single LLM call)             │
+│                    ┌───────────────┼───────────────────┐                        │
+│                    ▼               ▼                   ▼                        │
+│             English Tutor    Engineering Tutor    Agent Session                 │
+│                    │               │                  │                         │
+│             ┌──────┴──────┐  ┌─────┴──────┐   ┌───────┴────────┐                │
+│             ▼             ▼  ▼            ▼   ▼               ▼                 │
+│       LanguageTool    LLM  FAISS RAG    LLM  Tool         Web Search            │
+│       (port 8081)  Feedback  Index   Tutor  Dispatcher    (DuckDuckGo)          │
+│       Grammar        TTS-  (FAISS +  Mentor  │                │                 │
+│       Detection     ready   MiniLM)          │                │                 │
+│                                         ┌────┴────────────────┘                 │
+│                                         ▼                     │                 │
+│                                  SQLite Storage               │                 │
+│                               (tasks / calendar /             │                 │
+│                                reminders / WA stub)           │                 │
+│                                                               │                 │
+│                                  OAK-D Pro                    │                 │
+│                            Stereo Depth + YOLO  ──────────────┘                 │
+│                             (Perception Module)                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---

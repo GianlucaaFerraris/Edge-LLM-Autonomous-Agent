@@ -1,0 +1,46 @@
+# ============================================================
+# Agenty Edge Assistant — Runtime Requirements
+# ============================================================
+# Tested on: Python 3.10 | Ubuntu 22.04 | x86_64 & aarch64
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# Note: Ollama must be running separately (not a Python dep).
+#   → https://ollama.com/download
+#
+# Note: LanguageTool server is a Java process, not a pip dep.
+#   → https://languagetool.org/download/ (extract to ~/languagetool/)
+#   → Requires: sudo apt install default-jre
+# ============================================================
+
+# ── Core LLM client ──────────────────────────────────────────
+# OpenAI-compatible client used to talk to local Ollama server
+openai>=1.0.0
+
+# ── HTTP / networking ─────────────────────────────────────────
+# Used for Ollama health checks, LanguageTool HTTP API, DuckDuckGo
+requests>=2.28.0
+
+# ── RAG engine ────────────────────────────────────────────────
+# Vector similarity search (FAISS index)
+faiss-cpu>=1.7.4
+
+# Multilingual sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2)
+# Downloads ~120MB model on first run — cached in ~/.cache/torch/sentence_transformers
+sentence-transformers>=2.2.0
+
+# Required by sentence-transformers for vector ops
+numpy>=1.24.0
+
+# ── Web search ────────────────────────────────────────────────
+# DuckDuckGo search — no API key required, works on ARM (Rock 5B / Jetson)
+duckduckgo-search>=3.9.0
+
+# ── Local persistence (SQLite wrappers) ───────────────────────
+# tasks.db / calendar.db / reminders.db use stdlib sqlite3 — no extra dep needed.
+# No additional packages required for local DB.
+
+# ── Standard library modules used (no install needed) ─────────
+# sqlite3, datetime, json, os, re, threading, time, signal,
+# subprocess, glob, random, dataclasses, typing, pathlib
