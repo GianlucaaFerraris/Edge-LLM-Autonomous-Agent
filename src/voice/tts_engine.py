@@ -65,19 +65,21 @@ VOICE_MAP = {
         "name": "ald",
         "quality": "medium",
         "description": "Hombre amigable (agente/orquestador)",
-        # Piper speech rate: 1.0 = normal, <1 = más lento, >1 = más rápido
-        "length_scale": 1.0,
+        "length_scale": 0.88,   # ligeramente más rápido que default → más natural
+        "noise_scale": 0.85,    # más variabilidad prosódica → menos robótico
+        "noise_w": 0.90,        # más variabilidad de duración de fonemas
     },
 
     # Tutor de ingeniería — hombre maduro/sabio, español peninsular
-    # davefx tiene un tono más grave y "profesoral"
     "engineering_es": {
         "lang_code": "es_ES",
         "lang_family": "es",
         "name": "davefx",
         "quality": "medium",
         "description": "Hombre maduro (ingeniería, español)",
-        "length_scale": 1.05,  # ligeramente más lento → más gravitas
+        "length_scale": 0.92,   # ritmo pausado pero no arrastrado
+        "noise_scale": 0.80,
+        "noise_w": 0.85,
     },
 
     # Tutor de ingeniería — fallback para respuestas en inglés
@@ -87,7 +89,9 @@ VOICE_MAP = {
         "name": "hfc_male",
         "quality": "medium",
         "description": "Hombre (ingeniería, inglés)",
-        "length_scale": 1.0,
+        "length_scale": 0.88,
+        "noise_scale": 0.82,
+        "noise_w": 0.88,
     },
 
     # Tutor de inglés — mujer, intros en español
@@ -95,9 +99,11 @@ VOICE_MAP = {
         "lang_code": "es_AR",
         "lang_family": "es",
         "name": "daniela",
-        "quality": "high",
+        "quality": "high",      # modelo high = mejor calidad base
         "description": "Mujer (tutor inglés, partes en español)",
-        "length_scale": 1.0,
+        "length_scale": 0.90,
+        "noise_scale": 0.85,
+        "noise_w": 0.90,
     },
 
     # Tutor de inglés — mujer, feedback en inglés
@@ -107,7 +113,9 @@ VOICE_MAP = {
         "name": "amy",
         "quality": "medium",
         "description": "Mujer (tutor inglés, feedback)",
-        "length_scale": 1.0,
+        "length_scale": 0.88,
+        "noise_scale": 0.85,
+        "noise_w": 0.90,
     },
 }
 
@@ -314,18 +322,102 @@ class TTSEngine:
             self._speak_print(text, voice_key)
             return
 
-        # Obtener length_scale de la config
+        # Obtener parámetros VITS de la config de voz
         cfg = VOICE_MAP.get(voice_key, {})
         length_scale = cfg.get("length_scale", 1.0)
+        noise_scale  = cfg.get("noise_scale", 0.667)
+        noise_w      = cfg.get("noise_w", 0.8)
 
         try:
             if self._backend == "python":
-                self._speak_python(text, model_path, length_scale)
+                self._speak_python(text, model_path, length_scale, noise_scale, noise_w)
             else:
                 self._speak_cli(text, model_path, length_scale)
         except Exception as e:
             print(f"  [TTS] Error sintetizando: {e}")
             self._speak_print(text, voice_key)
+
+    def speak_stream(self, token_iter, voice_key: str = "agent",
+                     auto_detect_lang: bool = False) -> str:
+        """
+        TTS en streaming: sintetiza y reproduce oración por oración
+        mientras el LLM sigue generando tokens.
+
+        Latencia percibida = TTFT_primera_oración + ~20ms (Piper)
+        en lugar de total_generation_time + 20ms.
+
+        Detección de idioma — UNA vez por respuesta, no por oración:
+          La voz se determina en la primera oración y se bloquea para
+          toda la respuesta. Esto evita que oraciones técnicas con
+          términos en inglés (ej: "se calcula con backpropagation")
+          sean clasificadas como inglés y cambien la voz a mitad de párrafo.
+          Una respuesta del LLM está en un idioma; no alterna mid-párrafo.
+        """
+        import re
+
+        _SENTENCE_END = re.compile(r'(?<=[.!?])\s+|(?<=\n)')
+
+        full_text = ""
+        buffer    = ""
+
+        if self.use_print:
+            for token in token_iter:
+                full_text += token
+                print(token, end="", flush=True)
+            print()
+            return full_text
+
+        # Voz activa — se resuelve una vez en la primera oración y no cambia
+        _resolved_key:  str  = None   # None = todavía no detectado
+        _resolved_path       = None
+        _resolved_cfg:  dict = None
+
+        def _resolve_once(sentence: str) -> None:
+            """Detecta idioma en la primera oración y bloquea la voz."""
+            nonlocal _resolved_key, _resolved_path, _resolved_cfg
+            if _resolved_key is not None:
+                return  # ya resuelto, no volver a detectar
+            if auto_detect_lang:
+                key = self._resolve_voice_for_text(sentence, voice_key)
+            else:
+                key = voice_key
+            _resolved_key  = key
+            _resolved_path = self._voice_models.get(key)
+            _resolved_cfg  = VOICE_MAP.get(key, VOICE_MAP.get(voice_key, {}))
+
+        def _speak_sentence(sentence: str) -> None:
+            s = sentence.strip()
+            if not s:
+                return
+            _resolve_once(s)
+            if not _resolved_path or not _resolved_path.exists():
+                return
+            try:
+                self._speak_python(
+                    s, _resolved_path,
+                    _resolved_cfg.get("length_scale", 1.0),
+                    _resolved_cfg.get("noise_scale", 0.667),
+                    _resolved_cfg.get("noise_w", 0.8),
+                )
+            except Exception as e:
+                print(f"  [TTS] Error en stream: {e}")
+
+        for token in token_iter:
+            full_text += token
+            buffer    += token
+            print(token, end="", flush=True)
+
+            parts = _SENTENCE_END.split(buffer)
+            if len(parts) > 1:
+                for sentence in parts[:-1]:
+                    _speak_sentence(sentence)
+                buffer = parts[-1]
+
+        if buffer.strip():
+            _speak_sentence(buffer)
+
+        print()
+        return full_text
 
     def _resolve_voice_for_text(self, text: str,
                                  base_voice_key: str) -> str:
@@ -356,7 +448,9 @@ class TTSEngine:
         return base_voice_key
 
     def _speak_python(self, text: str, model_path: Path,
-                      length_scale: float) -> None:
+                      length_scale: float,
+                      noise_scale: float = 0.667,
+                      noise_w: float = 0.8) -> None:
         """
         Síntesis usando el Python package de Piper.
 
@@ -364,17 +458,15 @@ class TTSEngine:
           synthesize(text, syn_config=None) -> Iterable[AudioChunk]
 
         synthesize() NO recibe wav_file. Retorna un iterable de AudioChunk;
-        cada chunk tiene un atributo con los bytes PCM crudos. El caller
-        es responsable de escribirlos al WAV. No iterar = 0 frames escritos
-        = buffer de 44 bytes (solo header) = silencio sin error.
+        cada chunk expone .audio_int16_bytes con los bytes PCM crudos.
+        No iterar = 0 frames escritos = buffer de 44b (solo header) = silencio.
 
-        AudioChunk tiene al menos uno de estos atributos según sub-versión:
-          .audio        → bytes  (más común)
-          .audio_bytes  → bytes
-          .audio_array  → np.ndarray int16
+        Parámetros VITS que controlan calidad/naturalidad:
+          length_scale: velocidad (0.85 = 15% más rápido que 1.0)
+          noise_scale:  variabilidad prosódica (más alto = menos robótico)
+          noise_w:      variabilidad de duración de fonemas
         """
         import piper
-        import inspect
 
         voice = piper.PiperVoice.load(str(model_path))
 
@@ -389,19 +481,25 @@ class TTSEngine:
         except Exception:
             pass
 
-        # Construir SynthesisConfig
+        # Construir SynthesisConfig con todos los parámetros VITS
         syn_config = None
         try:
             from piper import SynthesisConfig
             try:
-                syn_config = SynthesisConfig(length_scale=length_scale)
+                syn_config = SynthesisConfig(
+                    length_scale=length_scale,
+                    noise_scale=noise_scale,
+                    noise_w=noise_w,
+                )
             except TypeError:
-                # Esta sub-versión no acepta length_scale en el constructor
-                syn_config = SynthesisConfig()
+                # Sub-versión con constructor diferente — intentar solo length_scale
+                try:
+                    syn_config = SynthesisConfig(length_scale=length_scale)
+                except TypeError:
+                    syn_config = SynthesisConfig()
         except ImportError:
-            pass  # syn_config=None usa defaults del modelo
+            pass  # syn_config=None → defaults del modelo
 
-        # Sintetizar y escribir frames chunk a chunk
         wav_buffer = io.BytesIO()
         with wave.open(wav_buffer, "wb") as wav_file:
             wav_file.setnchannels(1)

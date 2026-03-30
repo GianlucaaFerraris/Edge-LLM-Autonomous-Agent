@@ -155,6 +155,25 @@ class VoiceIO:
             prompt = "[VOS]: "
         return self.stt.listen(prompt=prompt)
 
+    def speak_stream(self, token_iter, force_voice: str = None) -> str:
+        """
+        TTS en streaming: habla oración por oración mientras el LLM genera.
+        Retorna el texto completo acumulado.
+
+        Args:
+            token_iter:  Iterable de tokens (deltas del stream del LLM).
+            force_voice: Voice key explícita (overrides auto-detection).
+        """
+        cfg = self._mode_cfg
+        voice_key = force_voice or cfg["tts_voice_es"]
+        auto_detect = cfg["auto_detect_tts"] and not force_voice
+
+        return self.tts.speak_stream(
+            token_iter,
+            voice_key=voice_key,
+            auto_detect_lang=auto_detect,
+        )
+
     def speak(self, text: str, force_voice: str = None) -> None:
         """
         Sintetiza y reproduce texto como audio.

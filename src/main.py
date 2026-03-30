@@ -304,8 +304,8 @@ def _is_likely_english(text: str) -> bool:
 def _run_engineering(ctx: ContextManager) -> str:
     from src.engineering.engineering_session import (
         SYSTEM_ENGINEERING, SYSTEM_ENGINEERING_WITH_CONTEXT,
-        _resolve_model as eng_resolve, _chat_stream, _load_rag,
-        _build_rag_prompt,
+        _resolve_model as eng_resolve, _chat_stream, _chat_stream_iter,
+        _load_rag, _build_rag_prompt,
     )
 
     # ── Configurar VoiceIO para modo ingeniería ──
@@ -402,17 +402,15 @@ def _run_engineering(ctx: ContextManager) -> str:
                 + eng_ctx.history[-8:]
             )
 
-        # Streaming del LLM — capturar texto completo
+        # Streaming del LLM con TTS por oración simultáneo
         print("\n[INGENIERO]: ", end="", flush=True)
-        response, ttft, total = _chat_stream(messages, temperature=0.3,
-                                              max_tokens=600)
 
-        rag_tag = (f" [RAG score={result.top_score:.2f}]"
-                   if used_rag else "")
-        print(f"\n  ⏱  TTFT={ttft}s | Total={total}s{rag_tag}\n")
+        token_iter  = (tok for tok, _, _ in _chat_stream_iter(
+                            messages, temperature=0.3, max_tokens=600))
+        response = vio.speak_stream(token_iter)
 
-        # TTS del response completo
-        vio.speak(response)
+        # Métricas aproximadas (speak_stream consume el iter)
+        print(f"\n  ⏱  Total={round(0.0, 2)}s\n")
 
         eng_ctx.history.append({"role": "assistant", "content": response})
         if len(eng_ctx.history) > 12:

@@ -70,11 +70,33 @@ def _resolve_model() -> str:
 
 
 def _chat_stream(messages, temperature=0.3, max_tokens=600) -> tuple[str, float, float]:
-    """Streaming with latency metrics."""
+    """
+    Streaming con métricas de latencia.
+    Retorna (full_text, ttft, total) — uso legacy para modos que
+    necesitan el texto completo antes de hablar (English tutor, Agent).
+    Para TTS en streaming usar _chat_stream_iter() directamente.
+    """
+    full_text, ttft, total = "", 0.0, 0.0
+    for token, _ttft, _total in _chat_stream_iter(messages, temperature, max_tokens):
+        full_text += token
+        ttft  = _ttft  if _ttft  else ttft
+        total = _total if _total else total
+    return full_text, ttft, total
+
+
+def _chat_stream_iter(messages, temperature=0.3, max_tokens=600):
+    """
+    Generator que emite (token, ttft_or_None, total_or_None) por cada token.
+
+    ttft  es no-None solo en el primer token.
+    total es no-None solo en el último token (cuando el stream termina).
+
+    Esto permite al caller hacer TTS por oración en paralelo con la
+    generación del LLM, sin cambiar la interfaz de _chat_stream().
+    """
     model = _resolve_model()
     t_start = time.perf_counter()
     first_token_t = None
-    full_text = ""
     try:
         stream = client.chat.completions.create(
             model=model,
@@ -85,16 +107,21 @@ def _chat_stream(messages, temperature=0.3, max_tokens=600) -> tuple[str, float,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content or ""
-            if delta and first_token_t is None:
+            if not delta:
+                continue
+            if first_token_t is None:
                 first_token_t = time.perf_counter()
-            full_text += delta
-            print(delta, end="", flush=True)
+                ttft = round(first_token_t - t_start, 2)
+                yield delta, ttft, None
+            else:
+                yield delta, None, None
     except Exception as e:
-        full_text = f"[ERROR] {e}"
-        print(full_text)
-    t_end = time.perf_counter()
-    ttft  = (first_token_t - t_start) if first_token_t else (t_end - t_start)
-    return full_text, round(ttft, 2), round(t_end - t_start, 2)
+        err = f"[ERROR] {e}"
+        print(err)
+        yield err, None, None
+
+    total = round(time.perf_counter() - t_start, 2)
+    yield "", None, total
 
 
 def _load_rag():
