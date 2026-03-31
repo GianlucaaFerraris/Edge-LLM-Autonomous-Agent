@@ -468,6 +468,7 @@ def main():
         if intent.action == "exit_app":
             speak("¡Hasta luego!")
             ensure_stopped()
+            vio.stt.shutdown()
             break
 
         if intent.action == "unclear":
@@ -508,6 +509,7 @@ def main():
             elif next_mode == "exit_app":
                 speak("¡Hasta luego!")
                 ensure_stopped()
+                vio.stt.shutdown()
                 return
 
             else:

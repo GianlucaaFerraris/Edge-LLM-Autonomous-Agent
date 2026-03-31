@@ -66,10 +66,10 @@ MODE_CONFIG = {
         "prefix": "[TUTOR]",
     },
     "engineering": {
-        "stt_lang": "es",  # la mayoría de consultas son en español
+        "stt_lang": "es",
         "tts_voice_es": "engineering_es",
-        "tts_voice_en": "engineering_en",
-        "auto_detect_tts": True,  # puede responder en inglés si le preguntan en inglés
+        "tts_voice_en": "engineering_es",  # siempre voz española, nunca engineering_en
+        "auto_detect_tts": False,           # el tutor responde siempre en español
         "prefix": "[INGENIERO]",
     },
 }

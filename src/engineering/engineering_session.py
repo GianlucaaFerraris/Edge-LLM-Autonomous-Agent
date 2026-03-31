@@ -33,7 +33,9 @@ SYSTEM_ENGINEERING = (
     "You adapt your depth to what is being asked: a definition gets a crisp explanation, "
     "a comparison gets a structured contrast, a 'why' gets philosophy and context. "
     "You are direct and concrete — no filler phrases like 'Great question!' or 'Sure!'. "
-    "If asked in Spanish, answer in Spanish. If asked in English, answer in English. "
+    "ALWAYS respond in Spanish (Rioplatense Spanish), regardless of the language the "
+    "question is asked in. Technical terms may remain in English when they are universally "
+    "used that way (e.g., 'backpropagation', 'transformer', 'pipeline'). "
     "No bullet-point lists unless the question is explicitly a comparison or enumeration. "
     "No Chinese characters. "
     "When stating specific facts (dates, names, measurements, records), if you are not "
@@ -51,12 +53,9 @@ SYSTEM_ENGINEERING_WITH_CONTEXT = (
     "If the context contradicts your prior knowledge, trust the context. "
     "If the context is only partially relevant, use what's useful and fill "
     "the rest with your expertise.\n\n"
-    "CRITICAL LANGUAGE RULE: The knowledge base context may be in English, "
-    "but you MUST ALWAYS respond in the same language the user is writing in. "
-    "If the user writes in Spanish, your ENTIRE response must be in Spanish — "
-    "translate and adapt the English context, do not copy it verbatim. "
-    "Technical terms (e.g., 'backpropagation', 'deep learning') can stay in English "
-    "if they are commonly used that way in Spanish technical discourse."
+    "CRITICAL LANGUAGE RULE: The knowledge base context is in English, "
+    "but you MUST ALWAYS respond in Spanish — translate and adapt the English "
+    "context, do not copy it verbatim. "
 )
 
 
@@ -70,29 +69,45 @@ def _resolve_model() -> str:
 
 
 def _chat_stream(messages, temperature=0.3, max_tokens=600) -> tuple[str, float, float]:
-    """
-    Streaming con métricas de latencia.
-    Retorna (full_text, ttft, total) — uso legacy para modos que
-    necesitan el texto completo antes de hablar (English tutor, Agent).
-    Para TTS en streaming usar _chat_stream_iter() directamente.
-    """
-    full_text, ttft, total = "", 0.0, 0.0
-    for token, _ttft, _total in _chat_stream_iter(messages, temperature, max_tokens):
-        full_text += token
-        ttft  = _ttft  if _ttft  else ttft
-        total = _total if _total else total
-    return full_text, ttft, total
+    """Streaming with latency metrics."""
+    model = _resolve_model()
+    t_start = time.perf_counter()
+    first_token_t = None
+    full_text = ""
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            if delta and first_token_t is None:
+                first_token_t = time.perf_counter()
+            full_text += delta
+            print(delta, end="", flush=True)
+    except Exception as e:
+        full_text = f"[ERROR] {e}"
+        print(full_text)
+    t_end = time.perf_counter()
+    ttft  = (first_token_t - t_start) if first_token_t else (t_end - t_start)
+    return full_text, round(ttft, 2), round(t_end - t_start, 2)
 
 
 def _chat_stream_iter(messages, temperature=0.3, max_tokens=600):
     """
-    Generator que emite (token, ttft_or_None, total_or_None) por cada token.
+    Generador que yielda (token, ttft, total) token a token.
 
-    ttft  es no-None solo en el primer token.
-    total es no-None solo en el último token (cuando el stream termina).
+    Diseñado para ser consumido por vio.speak_stream(), que acumula tokens
+    hasta detectar un límite de oración y entonces llama a Piper TTS —
+    permitiendo síntesis concurrente con la generación del LLM.
 
-    Esto permite al caller hacer TTS por oración en paralelo con la
-    generación del LLM, sin cambiar la interfaz de _chat_stream().
+    ttft y total solo tienen valores reales en el PRIMER y ÚLTIMO yield
+    respectivamente; en los yields intermedios total=0.0 para no calcular
+    perf_counter() en cada iteración (costo ~100ns, irrelevante pero limpio).
+    El caller (main.py) descarta estos valores: solo usa el token.
     """
     model = _resolve_model()
     t_start = time.perf_counter()
@@ -112,16 +127,18 @@ def _chat_stream_iter(messages, temperature=0.3, max_tokens=600):
             if first_token_t is None:
                 first_token_t = time.perf_counter()
                 ttft = round(first_token_t - t_start, 2)
-                yield delta, ttft, None
             else:
-                yield delta, None, None
+                ttft = 0.0
+            yield delta, ttft, 0.0
     except Exception as e:
-        err = f"[ERROR] {e}"
-        print(err)
-        yield err, None, None
-
-    total = round(time.perf_counter() - t_start, 2)
-    yield "", None, total
+        error_msg = f"[ERROR] {e}"
+        print(error_msg)
+        yield error_msg, 0.0, 0.0
+        return
+    t_end = time.perf_counter()
+    total = round(t_end - t_start, 2)
+    # Yield vacío final solo para transportar el total al caller
+    yield "", 0.0, total
 
 
 def _load_rag():
