@@ -346,26 +346,17 @@ class TTSEngine:
         TTS en streaming: sintetiza y reproduce oración por oración
         mientras el LLM sigue generando tokens.
 
-        Latencia percibida = TTFT_primera_oración + ~20ms (Piper)
-        en lugar de total_generation_time + 20ms.
-
         Barge-in:
-          Si barge_in_monitor es un BargeInMonitor, entre cada oración
-          se abre el gate del VAD para detectar voz del usuario.
-          Si se detecta interrupción:
-            1. Se aborta el playback (sd.stop())
-            2. Se drena el iterador del LLM (consume tokens restantes sin hablar)
-            3. Se retorna (text_so_far, True)
-
-        Detección de idioma — UNA vez por respuesta, no por oración:
-          La voz se determina en la primera oración y se bloquea para
-          toda la respuesta. Esto evita que oraciones técnicas con
-          términos en inglés (ej: "se calcula con backpropagation")
-          sean clasificadas como inglés y cambien la voz a mitad de párrafo.
+          Si barge_in_monitor está activo, su thread de captura corre
+          en paralelo escuchando el mic. Cuando detecta voz del usuario
+          con energía alta (voz directa, no echo del speaker), setea
+          interrupted=True. Este método chequea ese flag:
+            - Entre oraciones (antes de sintetizar la siguiente)
+            - Durante el playback (_play_wav polling loop)
+          Si se detecta interrupción, aborta y drena el iterador del LLM.
 
         Returns:
-            Tuple de (texto_completo, fue_interrumpido).
-            fue_interrumpido es True si se abortó por barge-in.
+            (texto_generado, fue_interrumpido)
         """
         import re
 
@@ -382,23 +373,21 @@ class TTSEngine:
             print()
             return full_text, False
 
-        # Si hay monitor de barge-in, conectar el interrupt event
-        # para que _play_wav pueda cortar el playback mid-sentence
+        # Conectar interrupt event para que _play_wav pueda abortar mid-sentence
         if barge_in_monitor is not None:
             self._interrupt_event = barge_in_monitor._interrupted
         else:
             self._interrupt_event = None
 
         # Voz activa — se resuelve una vez en la primera oración y no cambia
-        _resolved_key:  str  = None   # None = todavía no detectado
+        _resolved_key:  str  = None
         _resolved_path       = None
         _resolved_cfg:  dict = None
 
         def _resolve_once(sentence: str) -> None:
-            """Detecta idioma en la primera oración y bloquea la voz."""
             nonlocal _resolved_key, _resolved_path, _resolved_cfg
             if _resolved_key is not None:
-                return  # ya resuelto, no volver a detectar
+                return
             if auto_detect_lang:
                 key = self._resolve_voice_for_text(sentence, voice_key)
             else:
@@ -408,21 +397,13 @@ class TTSEngine:
             _resolved_cfg  = VOICE_MAP.get(key, VOICE_MAP.get(voice_key, {}))
 
         def _speak_sentence(sentence: str) -> bool:
-            """
-            Sintetiza y reproduce una oración.
-            Returns: True si fue interrumpida durante playback.
-            """
+            """Sintetiza y reproduce. Retorna True si fue interrumpida."""
             s = sentence.strip()
             if not s:
                 return False
             _resolve_once(s)
             if not _resolved_path or not _resolved_path.exists():
                 return False
-
-            # CERRAR gate antes de reproducir (evitar echo → false positive)
-            if barge_in_monitor is not None:
-                barge_in_monitor.close_gate()
-
             try:
                 self._speak_python(
                     s, _resolved_path,
@@ -433,22 +414,14 @@ class TTSEngine:
             except Exception as e:
                 print(f"  [TTS] Error en stream: {e}")
 
-            # Después de reproducir, ABRIR gate para detectar barge-in
-            # en el silencio entre oraciones
-            if barge_in_monitor is not None:
-                barge_in_monitor.open_gate()
-                # Dar un breve momento para que el VAD procese
-                # los chunks acumulados durante el blanking period
-                time.sleep(0.05)
-                if barge_in_monitor.interrupted:
-                    return True
-
+            # Chequear interrupción después de cada oración
+            if barge_in_monitor is not None and barge_in_monitor.interrupted:
+                return True
             return False
 
-        # ── Main streaming loop ──
+        # ── Main loop ──
 
         for token in token_iter:
-            # Chequear interrupción antes de acumular más tokens
             if barge_in_monitor is not None and barge_in_monitor.interrupted:
                 was_interrupted = True
                 break
@@ -468,30 +441,18 @@ class TTSEngine:
                 buffer = parts[-1]
 
         if not was_interrupted and buffer.strip():
-            if not (barge_in_monitor and barge_in_monitor.interrupted):
-                _speak_sentence(buffer)
-            else:
+            if _speak_sentence(buffer):
                 was_interrupted = True
 
-        # Drenar tokens restantes del LLM si fue interrumpido.
-        # IMPORTANTE: el iterador está conectado al stream HTTP de Ollama.
-        # Si no lo drenamos, la conexión queda abierta y el LLM sigue
-        # generando tokens que nadie consume → leak de recursos.
+        # Drenar tokens restantes del LLM para cerrar la conexión HTTP
         if was_interrupted:
             print("\n  [BARGE-IN] Drenando stream del LLM...", end="", flush=True)
             drained = 0
             for _ in token_iter:
                 drained += 1
-            if drained:
-                print(f" ({drained} tokens descartados)")
-            else:
-                print(" (ya terminado)")
+            print(f" ({drained} tokens descartados)")
 
-        # Limpiar estado
         self._interrupt_event = None
-        if barge_in_monitor is not None:
-            barge_in_monitor.close_gate()
-
         print()
         return full_text, was_interrupted
 
@@ -730,18 +691,21 @@ class TTSEngine:
 
             sd.play(audio_float, samplerate=sample_rate, device=device)
 
-            # Esperar reproducción — interrumpible por barge-in
-            # En vez de sd.wait() que bloquea sin escape, hacemos
-            # polling cada 50ms. Si hay un interrupt_event seteado,
-            # sd.stop() corta el playback inmediatamente.
+            # Esperar playback — interrumpible por barge-in.
+            # sd.wait() es bloqueante sin escape. En su lugar, calculamos
+            # la duración esperada del audio y hacemos polling cada 50ms.
             if self._interrupt_event is not None:
-                while sd.get_stream().active:
+                duration = len(audio_float) / sample_rate
+                t0 = time.monotonic()
+                while (time.monotonic() - t0) < (duration + 0.5):
                     if self._interrupt_event.is_set():
-                        sd.stop()
+                        sd.stop()  # corta playback inmediatamente
                         return
-                    time.sleep(0.05)  # 50ms polling — imperceptible
+                    time.sleep(0.05)
+                # Safety: asegurar que terminó
+                sd.stop()
             else:
-                sd.wait()  # fallback al comportamiento original
+                sd.wait()
             return
         except ImportError:
             pass

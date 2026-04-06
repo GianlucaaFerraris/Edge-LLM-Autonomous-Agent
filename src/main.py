@@ -417,12 +417,7 @@ def _run_engineering(ctx: ContextManager) -> str:
             eng_ctx.history = eng_ctx.history[-12:]
 
         if interrupted:
-            # El usuario interrumpió — escuchar inmediatamente qué quiere.
-            # No hablar nada ("dale, te escucho") porque el usuario ya
-            # está hablando / tiene algo que decir. Solo feedback visual.
             print("  [INFO] Respuesta interrumpida por el usuario.")
-            # El siguiente ciclo del while llama listen(), que captura
-            # lo que el usuario quiere decir.
 
 
 # ── MAIN LOOP ─────────────────────────────────────────────────────────────────

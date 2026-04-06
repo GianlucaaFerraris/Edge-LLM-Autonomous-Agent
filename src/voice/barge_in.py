@@ -1,48 +1,34 @@
 """
-barge_in.py — Detector de interrupciones por voz (barge-in).
+barge_in.py — Detector de interrupciones por voz (barge-in) v2.
 
-Permite al usuario interrumpir al asistente mientras habla diciendo
-"pará", "bueno", "está bien", etc. El sistema detecta la voz,
-aborta el TTS y el stream del LLM, y vuelve a escuchar.
+Permite al usuario interrumpir al asistente mientras habla.
 
-PROBLEMA DE ECHO:
-  Si el speaker y el mic están en el mismo dispositivo (laptop, SBC
-  sin headset), el audio del TTS entra por el mic y el VAD lo detecta
-  como voz del usuario → interrupción falsa constante.
+DISEÑO v2 — "Always-on VAD con umbral alto":
+  El VAD corre continuamente mientras el TTS reproduce. Para discriminar
+  el echo del speaker (que el mic captura) de la voz real del usuario,
+  usamos un umbral de energía significativamente más alto que el del STT.
 
-SOLUCIÓN — "Gated VAD":
-  El monitor de barge-in NO escucha continuamente. Tiene dos estados:
+  Justificación física:
+    - Echo speaker→mic (laptop): ~2000-7000 RMS (atenuado por distancia
+      speaker-mic, ángulo, y response del mic)
+    - Voz directa usuario→mic (~20-40cm): ~12000-30000 RMS
+    - Ratio típico: 3x-5x entre voz directa y echo
 
-  1. GATE CERRADO (durante reproducción TTS):
-     El mic captura audio pero el VAD está inhibido. No importa qué
-     energía tenga el signal — no se reporta interrupción.
+  El umbral se setea en ~12000 RMS — por encima del echo típico pero
+  por debajo de la voz directa. Esto funciona en la mayoría de laptops
+  y setups de SBC con mic USB + speaker separado.
 
-  2. GATE ABIERTO (entre oraciones, durante síntesis Piper):
-     Hay un gap natural de ~20-50ms entre que termina sd.play() de
-     la oración N y empieza sd.play() de la oración N+1. Durante
-     este gap, Y durante la síntesis Piper (~20ms), el speaker está
-     en silencio. El VAD se activa y si detecta voz, es del usuario.
+  Si el setup tiene echo muy fuerte (speaker potente cerca del mic),
+  se puede subir con env AGENTY_BARGE_THRESHOLD.
 
-  Además: cuando se abre el gate, hay un BLANKING_PERIOD de ~100ms
-  donde se descarta audio para que el tail del playback anterior
-  no genere un false positive.
-
-PROTOCOLO DE USO (desde speak_stream):
-  1. monitor.start()           → arranca thread de captura
-  2. [entre oraciones]:
-       monitor.open_gate()     → habilita detección
-       if monitor.interrupted: → chequear flag
-           break               → abortar stream
-       monitor.close_gate()    → inhibe detección antes de sd.play()
-  3. monitor.stop()            → cierra stream, limpia estado
-
-CONSUMO DE RECURSOS:
-  - Thread daemon: ~0 CPU cuando gate cerrado (solo append a buffer)
-  - VAD: RMS sobre int16 array, ~0.1ms por chunk de 512 samples
-  - RAM: buffer circular de ~1s de audio (32KB a 16kHz int16)
-  - No carga ningún modelo ML — puramente energía RMS
+PROTOCOLO:
+  1. monitor.start()           → arranca thread de captura de mic
+  2. [speak_stream reproduce]  → monitor escucha continuamente
+  3. monitor.interrupted       → True si detectó interrupción
+  4. monitor.stop()            → cierra stream, limpia estado
 """
 
+import os
 import threading
 import queue
 import time
@@ -52,93 +38,89 @@ from typing import Optional
 
 # ── Configuración ─────────────────────────────────────────────────────────────
 
-SAMPLE_RATE       = 16000   # Hz — consistente con stt_engine
-CHANNELS          = 1
-CHUNK_SIZE        = 512     # samples por callback (~32ms)
-DTYPE             = "int16"
+SAMPLE_RATE  = 16000
+CHANNELS     = 1
+CHUNK_SIZE   = 512     # ~32ms por chunk a 16kHz
+DTYPE        = "int16"
 
-# Umbral de energía para considerar "voz detectada".
-# Más alto que el ENERGY_THRESHOLD del STT (8000) porque durante el gap
-# entre oraciones puede haber reverberación residual del speaker.
-# El usuario que interrumpe habla con intención → energía más alta.
-BARGE_IN_ENERGY_THRESHOLD = 10000
+# Umbral de energía para barge-in.
+# Debe ser MÁS ALTO que el echo del speaker para evitar false positives.
+# Override: export AGENTY_BARGE_THRESHOLD=15000
+DEFAULT_BARGE_THRESHOLD = 12000
 
-# Cantidad de chunks consecutivos con voz para confirmar interrupción.
-# A 32ms/chunk, 4 chunks = ~128ms de voz sostenida.
-# Filtra transitorios (clicks, golpes) sin agregar latencia perceptible.
-BARGE_IN_CONFIRM_CHUNKS = 4
+# Chunks consecutivos con voz para confirmar interrupción.
+# 5 chunks × 32ms = ~160ms de voz sostenida.
+CONFIRM_CHUNKS = 5
 
-# Blanking period después de abrir el gate (en chunks).
-# Descarta audio residual del playback anterior.
-# 3 chunks × 32ms = ~96ms de blanking.
-BARGE_IN_BLANKING_CHUNKS = 3
+# Chunks de gracia: si hay 1-2 chunks de silencio entre chunks de voz,
+# no resetear el contador (pausa natural entre palabras).
+GRACE_CHUNKS = 2
+
+
+def _get_threshold() -> int:
+    """Lee threshold de env var o usa default."""
+    env = os.environ.get("AGENTY_BARGE_THRESHOLD")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    return DEFAULT_BARGE_THRESHOLD
 
 
 # ── Monitor ───────────────────────────────────────────────────────────────────
 
 class BargeInMonitor:
     """
-    Monitor de interrupciones por voz durante la reproducción de TTS.
-    
-    Diseño thread-safe:
-      - Un thread daemon captura audio continuamente del mic
-      - El thread principal (speak_stream) controla el gate
-      - La comunicación es via threading.Event (lock-free en CPython)
-      - El flag `interrupted` es un Event que se chequea sin blocking
-    
-    Ciclo de vida:
-      start() → [open_gate/close_gate por cada oración] → stop()
+    Monitor de barge-in: escucha el mic continuamente durante el TTS
+    y detecta cuando el usuario habla con energía suficiente para
+    ser voz directa (no echo del speaker).
+
+    Thread-safe: el thread de captura escribe, el thread principal lee.
+    Comunicación via threading.Event (lock-free).
     """
 
     def __init__(self, device_idx: Optional[int] = None,
-                 energy_threshold: int = BARGE_IN_ENERGY_THRESHOLD,
-                 confirm_chunks: int = BARGE_IN_CONFIRM_CHUNKS):
+                 energy_threshold: int = None):
         self._device_idx = device_idx
-        self._energy_threshold = energy_threshold
-        self._confirm_chunks = confirm_chunks
+        self._energy_threshold = energy_threshold or _get_threshold()
 
-        # Estado — todos thread-safe (Event/atomic en CPython)
+        # Estado
         self._interrupted = threading.Event()
-        self._gate_open = threading.Event()       # gate cerrado por default
         self._running = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
 
-        # Contadores internos (accedidos solo desde capture thread)
-        self._consecutive_voice = 0
-        self._blanking_remaining = 0
+        # Debug: último y pico RMS medido (para calibración)
+        self._last_rms: float = 0.0
+        self._peak_rms: float = 0.0
 
     @property
     def interrupted(self) -> bool:
-        """True si se detectó voz del usuario (interrupción confirmada)."""
         return self._interrupted.is_set()
 
     def start(self) -> bool:
         """
-        Inicia la captura de audio para monitoreo de barge-in.
-        Retorna True si se pudo iniciar, False si no hay mic disponible.
-        
-        El gate arranca CERRADO — no se detectan interrupciones hasta
-        que se llame open_gate().
+        Inicia captura de audio para monitoreo.
+        Retorna True si el mic se pudo abrir.
         """
         if self._capture_thread is not None and self._capture_thread.is_alive():
-            return True  # ya corriendo
+            self._interrupted.clear()
+            self._peak_rms = 0.0
+            return True
 
         self._interrupted.clear()
-        self._gate_open.clear()
         self._running.set()
-        self._consecutive_voice = 0
-        self._blanking_remaining = 0
+        self._peak_rms = 0.0
 
         try:
             import sounddevice as sd
-            # Verificar que el device existe y tiene input
             sd.check_input_settings(
                 device=self._device_idx,
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
             )
         except Exception as e:
-            print(f"  [BARGE-IN] No se puede abrir mic: {e}")
+            print(f"  [BARGE-IN] ❌ No se puede abrir mic para barge-in: {e}")
             return False
 
         self._capture_thread = threading.Thread(
@@ -147,64 +129,40 @@ class BargeInMonitor:
             daemon=True,
         )
         self._capture_thread.start()
+        print(f"  [BARGE-IN] ✅ Monitor activo (threshold={self._energy_threshold})")
         return True
 
     def stop(self) -> None:
-        """Detiene la captura. Llamar al final de speak_stream."""
+        """Detiene captura. Imprime peak RMS para calibración."""
         self._running.clear()
-        self._gate_open.clear()
         if self._capture_thread is not None:
-            self._capture_thread.join(timeout=1.0)
+            self._capture_thread.join(timeout=2.0)
             self._capture_thread = None
-
-    def open_gate(self) -> None:
-        """
-        Abre el gate: habilita la detección de voz.
-        Llamar DESPUÉS de que sd.wait() termine (speaker en silencio)
-        y ANTES de la próxima síntesis/playback.
-        """
-        self._blanking_remaining = BARGE_IN_BLANKING_CHUNKS
-        self._consecutive_voice = 0
-        self._gate_open.set()
-
-    def close_gate(self) -> None:
-        """
-        Cierra el gate: inhibe la detección de voz.
-        Llamar ANTES de sd.play() para evitar detectar el echo del speaker.
-        """
-        self._gate_open.clear()
-        self._consecutive_voice = 0
+        if self._peak_rms > 0:
+            print(f"  [BARGE-IN] Sesión finalizada — peak RMS: {self._peak_rms:.0f} "
+                  f"(threshold: {self._energy_threshold})")
 
     def reset(self) -> None:
-        """Limpia el flag de interrupción para reutilizar el monitor."""
+        """Limpia flag de interrupción para reutilizar."""
         self._interrupted.clear()
-        self._consecutive_voice = 0
+        self._peak_rms = 0.0
 
-    # ── Thread de captura ─────────────────────────────────────────────────────
+    # ── Capture thread ────────────────────────────────────────────────────────
 
     def _capture_loop(self) -> None:
         """
-        Loop de captura de audio en thread daemon.
-        
-        Usa RawInputStream (no InputStream) para evitar conversión
-        float32 innecesaria — solo necesitamos int16 para calcular RMS.
-        
-        El stream se mantiene abierto todo el tiempo que dura el
-        speak_stream. Abrir/cerrar el stream por cada gap entre
-        oraciones agregaría ~50-100ms de latencia (reconfiguración
-        de ALSA/PulseAudio), lo cual consumiría todo el gap.
+        Loop de captura + VAD en thread daemon.
+        Corre durante toda la duración del speak_stream.
         """
         import sounddevice as sd
 
-        audio_q: queue.Queue[bytes] = queue.Queue(maxsize=50)
+        audio_q: queue.Queue[bytes] = queue.Queue(maxsize=100)
 
         def _callback(indata: bytes, frames: int, time_info, status) -> None:
-            if status:
-                pass  # underrun/overflow — ignorar silenciosamente
             try:
                 audio_q.put_nowait(bytes(indata))
             except queue.Full:
-                pass  # descartar si el consumer no da abasto
+                pass
 
         try:
             stream = sd.RawInputStream(
@@ -216,8 +174,12 @@ class BargeInMonitor:
                 callback=_callback,
             )
         except Exception as e:
-            print(f"  [BARGE-IN] Error abriendo stream: {e}")
+            print(f"  [BARGE-IN] ❌ Error abriendo stream de mic: {e}")
+            print(f"  [BARGE-IN]    Device idx: {self._device_idx}")
             return
+
+        consecutive_voice = 0
+        silence_grace = 0
 
         with stream:
             while self._running.is_set():
@@ -226,37 +188,29 @@ class BargeInMonitor:
                 except queue.Empty:
                     continue
 
-                # Si el gate está cerrado, descartar el audio
-                if not self._gate_open.is_set():
-                    self._consecutive_voice = 0
-                    continue
-
-                # Si ya se confirmó interrupción, no procesar más
                 if self._interrupted.is_set():
-                    continue
-
-                # Blanking period: descartar chunks iniciales post-gate
-                if self._blanking_remaining > 0:
-                    self._blanking_remaining -= 1
                     continue
 
                 # VAD de energía RMS
                 chunk_np = np.frombuffer(raw, dtype=np.int16)
                 rms = float(np.sqrt(np.mean(chunk_np.astype(np.float32) ** 2)))
+                self._last_rms = rms
+                if rms > self._peak_rms:
+                    self._peak_rms = rms
 
                 if rms > self._energy_threshold:
-                    self._consecutive_voice += 1
-                    if self._consecutive_voice >= self._confirm_chunks:
+                    consecutive_voice += 1
+                    silence_grace = 0
+                    if consecutive_voice >= CONFIRM_CHUNKS:
                         self._interrupted.set()
-                        print("\n  [BARGE-IN] 🛑 Interrupción detectada")
+                        print(f"\n  [BARGE-IN] 🛑 Interrupción detectada "
+                              f"(RMS={rms:.0f}, threshold={self._energy_threshold})")
                 else:
-                    # Reset parcial: permitir 1 chunk de silencio en medio
-                    # de la frase (pausa natural entre palabras).
-                    # Solo resetear si hay ≥2 chunks de silencio consecutivos.
-                    if self._consecutive_voice > 0:
-                        self._consecutive_voice = max(0, self._consecutive_voice - 1)
-
-        # Stream cerrado automáticamente por context manager
+                    if consecutive_voice > 0:
+                        silence_grace += 1
+                        if silence_grace > GRACE_CHUNKS:
+                            consecutive_voice = 0
+                            silence_grace = 0
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
@@ -265,7 +219,6 @@ _monitor: Optional[BargeInMonitor] = None
 
 
 def get_barge_in_monitor(device_idx: Optional[int] = None) -> BargeInMonitor:
-    """Retorna la instancia global del monitor de barge-in."""
     global _monitor
     if _monitor is None:
         _monitor = BargeInMonitor(device_idx=device_idx)

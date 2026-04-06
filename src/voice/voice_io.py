@@ -67,10 +67,10 @@ MODE_CONFIG = {
         "prefix": "[TUTOR]",
     },
     "engineering": {
-        "stt_lang": "es",  # la mayoría de consultas son en español
+        "stt_lang": "es",
         "tts_voice_es": "engineering_es",
         "tts_voice_en": "engineering_en",
-        "auto_detect_tts": True,  # puede responder en inglés si le preguntan en inglés
+        "auto_detect_tts": False,  # siempre responde en español
         "prefix": "[INGENIERO]",
     },
 }
@@ -110,8 +110,7 @@ class VoiceIO:
         )
         self.tts = TTSEngine(use_print=use_print)
 
-        # Barge-in monitor: comparte device del STT para consistencia
-        # Solo se activa si hay mic real (no en modo keyboard/print)
+        # Barge-in: solo si hay mic + speaker reales
         self._barge_in: BargeInMonitor | None = None
         if not use_keyboard and not use_print:
             device_idx = getattr(self.stt, '_device_idx', None)
@@ -170,28 +169,20 @@ class VoiceIO:
     def speak_stream(self, token_iter, force_voice: str = None) -> tuple[str, bool]:
         """
         TTS en streaming: habla oración por oración mientras el LLM genera.
-        Retorna (texto_completo, fue_interrumpido).
-
-        Si el barge-in monitor detecta voz del usuario entre oraciones,
-        aborta el TTS y drena el stream del LLM.
-
-        Args:
-            token_iter:  Iterable de tokens (deltas del stream del LLM).
-            force_voice: Voice key explícita (overrides auto-detection).
+        Si el barge-in monitor detecta voz del usuario, aborta.
 
         Returns:
-            Tuple[str, bool]: (texto acumulado, True si fue interrumpido).
+            (texto_acumulado, fue_interrumpido)
         """
         cfg = self._mode_cfg
         voice_key = force_voice or cfg["tts_voice_es"]
         auto_detect = cfg["auto_detect_tts"] and not force_voice
 
-        # Activar barge-in monitor si está disponible
+        # Activar barge-in si hay monitor disponible
         monitor = None
         if self._barge_in is not None:
             if self._barge_in.start():
                 monitor = self._barge_in
-            # Si start() falla (no hay mic), continúa sin barge-in
 
         try:
             text, interrupted = self.tts.speak_stream(
@@ -201,7 +192,6 @@ class VoiceIO:
                 barge_in_monitor=monitor,
             )
         finally:
-            # Siempre detener el monitor al terminar
             if monitor is not None:
                 monitor.stop()
                 monitor.reset()
