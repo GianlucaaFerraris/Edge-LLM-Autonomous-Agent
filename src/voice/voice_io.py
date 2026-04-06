@@ -33,6 +33,7 @@ from typing import Optional
 
 from stt_engine import STTEngine, get_stt
 from tts_engine import TTSEngine, get_tts, detect_language
+from barge_in import BargeInMonitor
 
 # ── Configuración de voz por modo ────────────────────────────────────────────
 
@@ -66,10 +67,10 @@ MODE_CONFIG = {
         "prefix": "[TUTOR]",
     },
     "engineering": {
-        "stt_lang": "es",
+        "stt_lang": "es",  # la mayoría de consultas son en español
         "tts_voice_es": "engineering_es",
-        "tts_voice_en": "engineering_es",  # siempre voz española, nunca engineering_en
-        "auto_detect_tts": False,           # el tutor responde siempre en español
+        "tts_voice_en": "engineering_en",
+        "auto_detect_tts": True,  # puede responder en inglés si le preguntan en inglés
         "prefix": "[INGENIERO]",
     },
 }
@@ -108,6 +109,17 @@ class VoiceIO:
             use_keyboard=use_keyboard,
         )
         self.tts = TTSEngine(use_print=use_print)
+
+        # Barge-in monitor: comparte device del STT para consistencia
+        # Solo se activa si hay mic real (no en modo keyboard/print)
+        self._barge_in: BargeInMonitor | None = None
+        if not use_keyboard and not use_print:
+            device_idx = getattr(self.stt, '_device_idx', None)
+            self._barge_in = BargeInMonitor(device_idx=device_idx)
+            print("  [VoiceIO] Barge-in: habilitado")
+        else:
+            print("  [VoiceIO] Barge-in: deshabilitado (modo texto)")
+
         print(f"  [VoiceIO] STT: {self.stt.get_info()['engine']} | "
               f"TTS: {self.tts.get_info()['engine']}")
 
@@ -155,24 +167,46 @@ class VoiceIO:
             prompt = "[VOS]: "
         return self.stt.listen(prompt=prompt)
 
-    def speak_stream(self, token_iter, force_voice: str = None) -> str:
+    def speak_stream(self, token_iter, force_voice: str = None) -> tuple[str, bool]:
         """
         TTS en streaming: habla oración por oración mientras el LLM genera.
-        Retorna el texto completo acumulado.
+        Retorna (texto_completo, fue_interrumpido).
+
+        Si el barge-in monitor detecta voz del usuario entre oraciones,
+        aborta el TTS y drena el stream del LLM.
 
         Args:
             token_iter:  Iterable de tokens (deltas del stream del LLM).
             force_voice: Voice key explícita (overrides auto-detection).
+
+        Returns:
+            Tuple[str, bool]: (texto acumulado, True si fue interrumpido).
         """
         cfg = self._mode_cfg
         voice_key = force_voice or cfg["tts_voice_es"]
         auto_detect = cfg["auto_detect_tts"] and not force_voice
 
-        return self.tts.speak_stream(
-            token_iter,
-            voice_key=voice_key,
-            auto_detect_lang=auto_detect,
-        )
+        # Activar barge-in monitor si está disponible
+        monitor = None
+        if self._barge_in is not None:
+            if self._barge_in.start():
+                monitor = self._barge_in
+            # Si start() falla (no hay mic), continúa sin barge-in
+
+        try:
+            text, interrupted = self.tts.speak_stream(
+                token_iter,
+                voice_key=voice_key,
+                auto_detect_lang=auto_detect,
+                barge_in_monitor=monitor,
+            )
+        finally:
+            # Siempre detener el monitor al terminar
+            if monitor is not None:
+                monitor.stop()
+                monitor.reset()
+
+        return text, interrupted
 
     def speak(self, text: str, force_voice: str = None) -> None:
         """

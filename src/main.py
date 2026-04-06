@@ -407,7 +407,7 @@ def _run_engineering(ctx: ContextManager) -> str:
 
         token_iter  = (tok for tok, _, _ in _chat_stream_iter(
                             messages, temperature=0.3, max_tokens=600))
-        response = vio.speak_stream(token_iter)
+        response, interrupted = vio.speak_stream(token_iter)
 
         # Métricas aproximadas (speak_stream consume el iter)
         print(f"\n  ⏱  Total={round(0.0, 2)}s\n")
@@ -415,6 +415,14 @@ def _run_engineering(ctx: ContextManager) -> str:
         eng_ctx.history.append({"role": "assistant", "content": response})
         if len(eng_ctx.history) > 12:
             eng_ctx.history = eng_ctx.history[-12:]
+
+        if interrupted:
+            # El usuario interrumpió — escuchar inmediatamente qué quiere.
+            # No hablar nada ("dale, te escucho") porque el usuario ya
+            # está hablando / tiene algo que decir. Solo feedback visual.
+            print("  [INFO] Respuesta interrumpida por el usuario.")
+            # El siguiente ciclo del while llama listen(), que captura
+            # lo que el usuario quiere decir.
 
 
 # ── MAIN LOOP ─────────────────────────────────────────────────────────────────
@@ -468,7 +476,6 @@ def main():
         if intent.action == "exit_app":
             speak("¡Hasta luego!")
             ensure_stopped()
-            vio.stt.shutdown()
             break
 
         if intent.action == "unclear":
@@ -509,7 +516,6 @@ def main():
             elif next_mode == "exit_app":
                 speak("¡Hasta luego!")
                 ensure_stopped()
-                vio.stt.shutdown()
                 return
 
             else:
