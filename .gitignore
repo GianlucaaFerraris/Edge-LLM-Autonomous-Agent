@@ -25,6 +25,5 @@ __pycache__/
 __pycache__
 
 # Folders to ignore
-src/engineering/rag/index/
 src/engineering/rag/docs/
 obsidian_docs/
