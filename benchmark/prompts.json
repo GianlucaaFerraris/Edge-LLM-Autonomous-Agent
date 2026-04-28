@@ -1,0 +1,38 @@
+{
+  "general": [
+    {"id": "gen_es_01", "lang": "es", "text": "Hola, ¿cómo estás hoy?"},
+    {"id": "gen_es_02", "lang": "es", "text": "Contame un chiste corto"},
+    {"id": "gen_es_03", "lang": "es", "text": "Decime tres colores y un animal"},
+    {"id": "gen_en_01", "lang": "en", "text": "Hi, how are you today?"},
+    {"id": "gen_en_02", "lang": "en", "text": "Tell me a short joke"}
+  ],
+  "engineering_es": [
+    {"id": "eng_es_01", "text": "¿Qué es la retropropagación y cómo calcula los gradientes?", "expected_rag": true, "domain": "deep_learning"},
+    {"id": "eng_es_02", "text": "Explicame el mecanismo de atención en transformers", "expected_rag": true, "domain": "deep_learning"},
+    {"id": "eng_es_03", "text": "¿Qué diferencia hay entre Q-learning y SARSA?", "expected_rag": true, "domain": "reinforcement_learning"},
+    {"id": "eng_es_04", "text": "¿Cómo funciona LoRA para fine-tuning de modelos grandes?", "expected_rag": true, "domain": "deep_learning"},
+    {"id": "eng_es_05", "text": "Explicame la cinemática directa e inversa de un brazo robótico", "expected_rag": true, "domain": "robotics"}
+  ],
+  "engineering_en": [
+    {"id": "eng_en_01", "text": "What is backpropagation and how does it compute gradients?", "expected_rag": true, "domain": "deep_learning"},
+    {"id": "eng_en_02", "text": "Explain the attention mechanism in transformers", "expected_rag": true, "domain": "deep_learning"},
+    {"id": "eng_en_03", "text": "What is the difference between Q-learning and SARSA?", "expected_rag": true, "domain": "reinforcement_learning"}
+  ],
+  "off_domain": [
+    {"id": "off_01", "text": "¿Cuál es la capital de Francia?", "expected_rag": false},
+    {"id": "off_02", "text": "¿Quién escribió Don Quijote?", "expected_rag": false},
+    {"id": "off_03", "text": "What year did World War II end?", "expected_rag": false}
+  ],
+  "intent_idle": [
+    {"id": "int_idle_01", "text": "quiero practicar inglés", "expected": "english"},
+    {"id": "int_idle_02", "text": "tengo una duda sobre redes neuronales", "expected": "engineering"},
+    {"id": "int_idle_03", "text": "agregá una tarea para mañana", "expected": "agent"},
+    {"id": "int_idle_04", "text": "¿puedo aprender algo contigo?", "expected": "unclear"}
+  ],
+  "intent_engineering": [
+    {"id": "int_eng_01", "text": "¿Cómo funciona el gradiente descendente?", "expected": "respond"},
+    {"id": "int_eng_02", "text": "quiero practicar inglés", "expected": "switch_english"},
+    {"id": "int_eng_03", "text": "agregá tarea comprar leche", "expected": "agent"},
+    {"id": "int_eng_04", "text": "volver al menú", "expected": "exit_mode"}
+  ]
+}
